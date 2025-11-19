@@ -1,2 +1,9 @@
 # Protein Diffusion Requirements
-
+biopython
+numpy
+pandas
+scipy
+scikit-learn
+scikit-image
+scikit-optimize
+scikit-optimize
