@@ -34,9 +34,11 @@ def load_backbone_coords(pdb_path):
 				residue["N] gets the atom obj and .getvector.getarray() turns it into
 				actual coord. array			
 				'''
-				N = residue["N"].get_vector().get_array()
-				CA = residue["CA"].get_vector().get_array()
-				C = residue["C"].get_vector().get_array()
+				N = residue["N"].get_vector().get_array() #Nitrogen
+				CA = residue["CA"].get_vector().get_array() #Alpha Carbon
+				C = residue["C"].get_vector().get_array() #Carbonyl Carbon
+
+				#These 3 atoms form the protein backbone (N - CA - C)
 				
 				#After parsing the whole PDB file you end up with a Python list of shape:
 				backbone.append([N, CA, C])
