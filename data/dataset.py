@@ -79,4 +79,97 @@ class ProteinBackboneDataset(Dataset):
         Lmax = max(lengths)
 
         #Step 2: Create padded tensors
+        coords_padded = torch.zeros((B, Lmax, 3, 3), dtype=torch.float32)
+        mask = torch.zeros((B, Lmax), dtype=torch.bool)
 
+        #Step 3: Fill in real values
+        for i, item in enumerate(batch):
+            L = item["length"]
+            coords = item["coords"] #shape (l,3,3)
+
+            coords_padded[i, :L, :, :] = coords
+            mask[i, :L] = 1 #marks real residues
+        '''
+        Imagine batch of 2 proteins:
+        •	P0: length 5
+        •	P1: length 3
+        •	Lmax = 5
+        we get:
+            coords_padded[0, 0:5] = P0 coords
+            mask[0] = [1,1,1,1,1]
+
+            coords_padded[1, 0:3] = P1 coords
+            coords_padded[1, 3:5] = zeros (kept from initialization)
+            mask[1] = [1,1,1,0,0]
+        So now we have:
+        •	coords_padded.shape == (B, Lmax, 3, 3)
+        •	mask.shape == (B, Lmax)
+
+        '''
+        lengths = torch.Tensor(lengths, dtype=torch.long)
+
+        return {
+            "coords": coords_padded,
+            "mask": mask,
+            "lengths": lengths,
+            "names": names
+        }
+        '''
+        Why do we need padding?
+            PyTorch wants batches to be single tensors.
+            If you ask for batch_size = 2, ideally you’d like a tensor:
+            coords.shape == (B, L, 3, 3)
+            # B = batch size
+            # L = same length for all proteins in the batch
+            But real proteins are variable-length:
+                •	Protein 1: L = 5
+                •	Protein 2: L = 8
+
+            You cannot stack them directly; PyTorch will complain:
+
+            “torch.stack: Sizes of tensors must match”
+
+            So we fix this by:
+                1.	Finding the longest protein in the batch → Lmax
+                2.	Expanding all proteins to that length by adding zeros at the end
+            (this is called padding)
+
+            Example with super tiny data:
+                •	P1 coords: shape (5, 3, 3)
+                •	P2 coords: shape (3, 3, 3)
+
+            We choose Lmax = 5.
+
+            We build a batch tensor (B, Lmax, 3, 3):
+                •	For P1:
+                •	Fill positions 0..4 with real values
+                •	For P2:
+                •	Fill positions 0..2 with real values
+                •	Fill positions 3..4 with zeros (fake / padding)
+
+            Now PyTorch can handle this as a single tensor.
+
+            ⸻
+
+            Why do we need a mask?
+
+            Padding creates fake residues (zeros you added to make sizes match).
+
+            The model must not:
+                •	compute loss on them
+                •	treat them as real residues
+                •	use them when computing things like RMSD, distances, etc.
+
+            So we create a mask that says:
+                •	True (or 1) → this position is a real residue
+                •	False (or 0) → this is padding, ignore
+
+            For the tiny example:
+                •	P1 (length 5): [1, 1, 1, 1, 1]
+                •	P2 (length 3): [1, 1, 1, 0, 0]
+
+            Batch mask: shape (B, Lmax).
+
+            Your model can do stuff like: 
+            loss = (per_residue_loss * mask).sum() / mask.sum()
+        '''
