@@ -89,6 +89,24 @@ class ProteinBackboneDataset(Dataset):
 
             coords_padded[i, :L, :, :] = coords
             mask[i, :L] = 1 #marks real residues
+    
+    def create_dataloader(folder_path, batch_size=4, shuffle=True, num_workers=0):
+        '''
+        Main function to create a PyTorch DataLoader for backbones.
+        '''
+        dataset = ProteinBackboneDataset(folder_path)
+        loader = DataLoader(
+            dataset,
+            batch_size=batch_size,
+            shuffle=shuffle,
+            num_workers=num_workers,
+            collate_fn=protein_collate_fn
+        )
+        return loader
+        
+        
+        
+        
         '''
         Imagine batch of 2 proteins:
         •	P0: length 5
@@ -114,6 +132,7 @@ class ProteinBackboneDataset(Dataset):
             "lengths": lengths,
             "names": names
         }
+    
         '''
         Why do we need padding?
             PyTorch wants batches to be single tensors.

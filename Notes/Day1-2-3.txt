@@ -23,7 +23,7 @@ From Day 2 you created .npy files, each one is a single protein backbone:
 That variability is the whole reason we need padding + masking.
 
 
-Day 3
+Day 3 ---------> revisit create_dataloader (dont get it?)
 By the end of today, you will have:
 - proteindiffusion/data/dataset.py implemented
 - a working PyTorch Dataset class
