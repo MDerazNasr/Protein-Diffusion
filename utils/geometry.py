@@ -33,3 +33,28 @@ def pair_wise_distances(x, mask=None):
         dist = dist * mask2d
 
     return dist
+
+def backbone_vectors(x, mask=None):
+    """
+    Compute backbone direction vectors between consecutive residues
+
+    Args: 
+        x: tensor of shape (B, L, 3)
+        mask: Optional bool tensor (B, L)
+    
+    Returns:
+        vecs: Tensor of shape (B, L-1, 3)
+    """
+
+    #Difference between consecutive residues
+    # x[:, 1:] = residue 1 to L
+    # x[:, :-1] = residue 0 to L-1
+    # Subtract → vector pointing forward along chain
+    vecs = x[:, 1:, :] - x[:, :-1, :]
+
+    # Mask removes fake bonds at padding boundaries
+    if mask is not None:
+        valid = mask[:, 1:] & mask[:, :-1]
+        vecs = vecs * valid.unsqueeze(-1)
+
+    return vecs
