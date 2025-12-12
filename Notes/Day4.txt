@@ -1,0 +1,45 @@
+W1D4
+
+goal 
+- understand what gerometic features proteins actually care about
+- know why diffusion models cant just use raw uyz coordinates
+- implement functions to compute:
+    - pairwise distances
+    - backbone bond vectors
+    - backbone angles
+- add a clean geometry.py module
+- integrate geometry features with your dataset
+
+
+why geometry matters here
+- raw XYZ coordinates are not enough because if you rotate
+the protein model in space, its the same protein biologically 
+but a diffrent one numerically, coordinates mixed up
+
+what to do to fix this
+
+Instead of caring about absolute position, proteins care about:
+
+Distances (how far atoms are from each other)
+
+Angles (how bonds bend)
+
+Relative directions
+
+These are rotation-invariant or equivariant, which means:
+- rotating the protein doesn’t break the meaning
+- This is the foundation of SE(3)-equivariant models
+
+What geomtery are we computing
+
+- pairwise distances
+- backbone bond vectors
+- local direction features
+
+later 
+- full phi/psi dihedrals 
+- energy terms
+- rosetta-style scoring
+
+geometry fucntions
+- 
