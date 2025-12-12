@@ -58,3 +58,11 @@ def backbone_vectors(x, mask=None):
         vecs = vecs * valid.unsqueeze(-1)
 
     return vecs
+
+#normalize vectors (find magnitude ssqrt(x2 + y2))
+def normalize_vectors(v, eps=1e-8):
+    '''
+    Normalise vectors to unit length
+    '''
+    norm = torch.sqrt((v**2).sum(dim=-1, keepdim=True) + eps)
+    return v / norm
