@@ -64,6 +64,9 @@ def protein_collate_fn(batch):
 
     OUTPUT:
     coords_padded: Tensor shape (B, Lmax, 3, 3)
+    ca_coords:      Tensor (B, Lmax, 3)     -> padded CA-only coordinates
+    pairwise_dist:  Tensor (B, Lmax, Lmax)  -> CA pairwise distance matrix
+    bond_vecs:      Tensor (B, Lmax-1, 3)   -> CA(i)->CA(i+1) backbone vectors
     mask:          Tensor shape (B, Lmax)
     lengths:       Tensor shape (B,) (original lengths)
     names:         list of strings
@@ -108,12 +111,21 @@ def protein_collate_fn(batch):
 
     '''
     lengths = torch.tensor(lengths, dtype=torch.long)
+    # After padding coords_padded
+    ca_coords = coords_padded[:, :, 1, :]  # (B, L, 3)
+
+    # Step 5: Compute geometry features (mask-aware)
+    pairwise_dist = pairwise_distances(ca_coords, mask)      # (B, Lmax, Lmax)
+    bond_vecs = backbone_vectors(ca_coords, mask)            # (B, Lmax-1, 3)
 
     return {
         "coords": coords_padded,
+        "ca_coords": ca_coords,
+        "pairwise_dist": pairwise_dist,
+        "bond_vecs": bond_vecs,
         "mask": mask,
         "lengths": lengths,
-        "names": names
+        "names": names,
     }
 
 

@@ -1,0 +1,15 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "proteindiffusion"
+version = "0.0.1"
+description = "ProteinDiffusion: generative protein design with diffusion models and CUDA evaluation."
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = []
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["proteindiffusion*"]
