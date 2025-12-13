@@ -16,6 +16,7 @@ import os
 import numpy as np
 import torch
 from torch.utils.data import Dataset, DataLoader
+from utils.geometry import pair_wise_distances, backbone_vectors
 
 class ProteinBackboneDataset(Dataset):
     '''
@@ -115,7 +116,7 @@ def protein_collate_fn(batch):
     ca_coords = coords_padded[:, :, 1, :]  # (B, L, 3)
 
     # Step 5: Compute geometry features (mask-aware)
-    pairwise_dist = pairwise_distances(ca_coords, mask)      # (B, Lmax, Lmax)
+    pairwise_dist = pair_wise_distances(ca_coords, mask)
     bond_vecs = backbone_vectors(ca_coords, mask)            # (B, Lmax-1, 3)
 
     return {
