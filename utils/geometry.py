@@ -103,3 +103,31 @@ def dihedral_angles_from_points(p0,p1,p2,p3, eps=1e-8):
     #torch.atan2(y, x) returns the angle whose tangent is y/x, but it also uses the signs of x and y to put the angle in the correct quadrant.
     angle = torch.atan2(y,x) # (-pi, pi)
     return angle
+
+'''
+compute a CA-based torsion using 4 consecutive CA points:
+CA[i-1], CA[i], CA[i+1], CA[i+2]
+This still captures “twistiness” of the chain and is a common feature in quick prototypes.
+'''
+#compute backbone dihedrals from CA atoms (simple, stable )
+def ca_torsion_angles(ca_coords, mask=None):
+    '''
+    Compute torsion (dihedral angles) using 4 consecutive CA atoms
+
+    Args:
+        ca_coords - tensor (B, L, 3)
+        mask - Optional bool tensor (B,L)
+    
+    Returns: 
+        Angles: Tensor (B, L-)
+    '''
+    B, L, _ = ca_coords.shape
+    if L < 4:
+        angles = torch.zeros((B,0), device=ca_coords.device)
+        angles_mask = torch.ones_like(angles, dtype=torch.bool)
+    else:
+        # Angle is valid only if all 4 residues exist
+        angles_mask = mask[:, :-3] & mask[:, 1:-2] & mask[:, 3:]
+    
+    angles = angles * angles_mask
+    return angles, angles_mask
