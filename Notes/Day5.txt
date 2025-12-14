@@ -23,5 +23,29 @@ Why distances/vectors aren't enough
 
 - distances tell you how far apart residues are
 - bind vectors tells you direction between residues
-but proiteuns also care about how the chain twists
+- but proiteuns also care about how the chain twists
 
+think of a protein backbone like a bendy straw:
+- you can bend it (angles)
+- you can also twist it (dihedral)
+
+what is a dihedral angle
+- it is the angle between two planes
+
+Given 4 pointds A-D:
+- Plane 1 formed by (A,B,C)
+- Plane 2 formed by (B,C,D)
+
+The dihedral is - how much plan 1 is rotated Relative to plane 2 aroudn the axis BC.
+
+Why we encode as sin/cos
+
+Angles wrap:
+- +179 deg is basically the same as -179 deg
+- But numerically they look far apart
+
+So we use sin and cos
+
+Part B - implement dihedral angle computation
+
+step 1 - add dihedral helper

@@ -66,3 +66,16 @@ def normalize_vectors(v, eps=1e-8):
     '''
     norm = torch.sqrt((v**2).sum(dim=-1, keepdim=True) + eps)
     return v / norm
+
+def dihedral_angles_from_points(p0,p1,p2,p3, eps=1e-8):
+    '''
+    Compute dihedral angles for a sequence of 4 points
+
+    Args:
+        p0,p1,p2,p3: Tensors of shape(..., 3)
+        eps: small constant for numerical stability
+
+    Returns:
+        angle: Tensor of shape (...) in radians, range(-pi, pi)    
+    '''
+    pass
