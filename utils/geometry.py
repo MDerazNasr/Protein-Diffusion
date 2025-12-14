@@ -68,14 +68,38 @@ def normalize_vectors(v, eps=1e-8):
     return v / norm
 
 def dihedral_angles_from_points(p0,p1,p2,p3, eps=1e-8):
+    #eps will just prevent division by 0
     '''
     Compute dihedral angles for a sequence of 4 points
 
     Args:
-        p0,p1,p2,p3: Tensors of shape(..., 3)
+        p0,p1,p2,p3: Tensors of shape(..., 3)  p0-3 are the 4 points in 3d space
         eps: small constant for numerical stability
 
     Returns:
         angle: Tensor of shape (...) in radians, range(-pi, pi)    
     '''
-    pass
+    #calc vectors between points
+    #In protein language: if points were atoms along the backbone, these are bond directions.
+    b0 = p1 - p0
+    b1 = p2 - p1
+    b2 = p3 - p2
+
+    #Normalise b1 so it defines the rotation axis cleanly
+    #.norm computes vector length (euclidean norm by def)
+    #b1_norm is the unit vector length pointing along b1
+    #acts as axis of rotation for dihedral angle
+    b1_norm = b1/ (torch.linalg.norm(b1, dim=-1, keepdim=True) + eps)
+
+    #Components perpindicular to b1 (project out to axis cleanly)
+    #The dihedral is about twisting around b1, so we compare the directions of b0 and b2 after removing any component along b1.
+    v = b0 - (b0 * b1_norm).sum(dim=-1, keepdim=True) * b1_norm
+    w = b2 - (b2 * b1_norm).sum(dim=-1, keepdim=True) * b1_norm
+
+    #compute angle using atan2 for correct sign
+    x = (v * w).sum(dim=-1)
+    y = (torch.cross(b1_norm, v, dim=-1) * w).sum(dim=-1)
+
+    #torch.atan2(y, x) returns the angle whose tangent is y/x, but it also uses the signs of x and y to put the angle in the correct quadrant.
+    angle = torch.atan2(y,x) # (-pi, pi)
+    return angle
