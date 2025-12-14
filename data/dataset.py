@@ -164,7 +164,7 @@ def protein_collate_fn(batch):
     ca_coords = coords_padded[:, :, 1, :]  # (B, Lmax, 3)
 
     # Step 5: geometry features (mask-aware)
-    pairwise_dist = pairwise_distances(ca_coords, mask)   # (B, Lmax, Lmax)
+    pairwise_dist = pair_wise_distances(ca_coords, mask)   # (B, Lmax, Lmax)
     bond_vecs = backbone_vectors(ca_coords, mask)         # (B, Lmax-1, 3)
 
     # Step 6: torsion angles from CA (mask-aware)

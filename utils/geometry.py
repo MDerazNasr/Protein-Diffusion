@@ -124,13 +124,24 @@ def ca_torsion_angles(ca_coords, mask=None):
     '''
     B, L, _ = ca_coords.shape
     if L < 4:
-        angles = torch.zeros((B,0), device=ca_coords.device)
-        angles_mask = torch.ones_like(angles, dtype=torch.bool)
+        angles = torch.zeros((B, 0), device=ca_coords.device, dtype=ca_coords.dtype)
+        angles_mask = torch.zeros((B, 0), dtype=torch.bool, device=ca_coords.device)
     else:
+        # Compute angles using 4 consecutive CA atoms: CA[i], CA[i+1], CA[i+2], CA[i+3]
+        # This gives us L-3 angles
+        angles = dihedral_angles_from_points(
+            ca_coords[:, :-3, :],  # CA[i]
+            ca_coords[:, 1:-2, :],  # CA[i+1]
+            ca_coords[:, 2:-1, :],  # CA[i+2]
+            ca_coords[:, 3:, :]     # CA[i+3]
+        )  # (B, L-3)
+        
         # Angle is valid only if all 4 residues exist
-        angles_mask = mask[:, :-3] & mask[:, 1:-2] & mask[:, 3:]
+        if mask is not None:
+            angles_mask = mask[:, :-3] & mask[:, 1:-2] & mask[:, 2:-1] & mask[:, 3:]
+        else:
+            angles_mask = torch.ones((B, L-3), dtype=torch.bool, device=ca_coords.device)
     
-    angles = angles * angles_mask
     return angles, angles_mask
 
 def angle_sin_cos(angle):
@@ -182,5 +193,6 @@ def make_inpaint_mask(lengths, Lmax, min_frac=0.15, max_frac=0.35):
 torsion angle??
 masking
 min_frac/max_frac
+inpainting
 
 '''
