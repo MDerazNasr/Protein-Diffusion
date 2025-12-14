@@ -1,6 +1,7 @@
 """Geometry utilities for protein structures."""
 
 import torch
+import random
 
 def pair_wise_distances(x, mask=None):
     '''
@@ -131,3 +132,55 @@ def ca_torsion_angles(ca_coords, mask=None):
     
     angles = angles * angles_mask
     return angles, angles_mask
+
+def angle_sin_cos(angle):
+    '''
+    Encode angles into a smoooth representation for ML
+
+    Returns:
+        Tensor (...., 2): [sin(angle), cos(angle)]
+    '''
+
+    return torch.stack([torch.sin(angle), torch.cos(angle)], dim=-1)
+
+def make_inpaint_mask(lengths, Lmax, min_frac=0.15, max_frac=0.35):
+    '''
+    Create a contiguos inpainting mask for each protein in a batch
+    
+    Args:
+        lengths: Tensor (B,) with true lengths (no padding)
+        Lmax: int maximum length in the batch
+        min_frac/max_frac: min/max fraction of residues to mask
+    
+    Returns:
+        inpaint_mask: bool_tensor (B, Lmax)
+            true - masked (to be inpainted)
+            false - visible
+    '''
+
+    B = lengths.shape[0]
+    inpaint_mask = torch.zeros((B, Lmax), dtype=torch.bool)
+
+    for i in range(B):
+        L = int(lengths[i].item())
+        if L < 8:
+            #too small; skip masking
+            continue
+        
+        frac = random.uniform(min_frac, max_frac)
+        seg_len = max(1, int(frac * L))
+
+        #pick a start so segment fits in [0,L)
+        start = random.randint(0, L - seg_len)
+        end = start + seg_len
+
+        inpaint_mask[i, start:end] = True
+    
+    return inpaint_mask
+
+'''
+torsion angle??
+masking
+min_frac/max_frac
+
+'''
