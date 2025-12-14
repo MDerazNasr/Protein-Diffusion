@@ -16,7 +16,13 @@ import os
 import numpy as np
 import torch
 from torch.utils.data import Dataset, DataLoader
-from utils.geometry import pair_wise_distances, backbone_vectors
+from utils.geometry import (
+    pair_wise_distances, 
+    backbone_vectors,
+    ca_torsion_angles,
+    angle_sin_cos,
+    make_inpaint_mask,
+)
 
 class ProteinBackboneDataset(Dataset):
     '''
@@ -56,78 +62,141 @@ class ProteinBackboneDataset(Dataset):
             "name": fname.replace(".npy", "")
         } #for each protein (1 at a time here), return a dict with structure info L,3,3
 
+#without dihedrals
+# def protein_collate_fn(batch):
+#     '''
+#     Custom collate function to handle variable-length proteins in a batch
 
-def protein_collate_fn(batch):
-    '''
-    Custom collate function to handle variable-length proteins in a batch
+#     batch is a list of dicts returned by __getitem__
 
-    batch is a list of dicts returned by __getitem__
+#     OUTPUT:
+#     coords_padded: Tensor shape (B, Lmax, 3, 3)
+#     ca_coords:      Tensor (B, Lmax, 3)     -> padded CA-only coordinates
+#     pairwise_dist:  Tensor (B, Lmax, Lmax)  -> CA pairwise distance matrix
+#     bond_vecs:      Tensor (B, Lmax-1, 3)   -> CA(i)->CA(i+1) backbone vectors
+#     mask:          Tensor shape (B, Lmax)
+#     lengths:       Tensor shape (B,) (original lengths)
+#     names:         list of strings
+#     '''
 
-    OUTPUT:
-    coords_padded: Tensor shape (B, Lmax, 3, 3)
-    ca_coords:      Tensor (B, Lmax, 3)     -> padded CA-only coordinates
-    pairwise_dist:  Tensor (B, Lmax, Lmax)  -> CA pairwise distance matrix
-    bond_vecs:      Tensor (B, Lmax-1, 3)   -> CA(i)->CA(i+1) backbone vectors
-    mask:          Tensor shape (B, Lmax)
-    lengths:       Tensor shape (B,) (original lengths)
-    names:         list of strings
-    '''
-
-    #step 1: Extract Lengths
-    lengths = []
-    names = []
-    for item in batch:
-        lengths.append(item["length"])
-        names.append(item["name"])
+#     #step 1: Extract Lengths
+#     lengths = []
+#     names = []
+#     for item in batch:
+#         lengths.append(item["length"])
+#         names.append(item["name"])
     
-    B = len(batch)
-    Lmax = max(lengths)
+#     B = len(batch)
+#     Lmax = max(lengths)
 
-    #Step 2: Create padded tensors
+#     #Step 2: Create padded tensors
+#     coords_padded = torch.zeros((B, Lmax, 3, 3), dtype=torch.float32)
+#     mask = torch.zeros((B, Lmax), dtype=torch.bool)
+
+#     #Step 3: Fill in real values
+#     for i, item in enumerate(batch):
+#         L = item["length"]
+#         coords = item["coords"] #shape (l,3,3)
+
+#         coords_padded[i, :L, :, :] = coords
+#         mask[i, :L] = 1 #marks real residues
+#     '''
+#     Imagine batch of 2 proteins:
+#     •	P0: length 5
+#     •	P1: length 3
+#     •	Lmax = 5
+#     we get:
+#         coords_padded[0, 0:5] = P0 coords
+#         mask[0] = [1,1,1,1,1]
+
+#         coords_padded[1, 0:3] = P1 coords
+#         coords_padded[1, 3:5] = zeros (kept from initialization)
+#         mask[1] = [1,1,1,0,0]
+#     So now we have:
+#     •	coords_padded.shape == (B, Lmax, 3, 3)
+#     •	mask.shape == (B, Lmax)
+
+#     '''
+#     lengths = torch.tensor(lengths, dtype=torch.long)
+#     # After padding coords_padded
+#     ca_coords = coords_padded[:, :, 1, :]  # (B, L, 3)
+
+#     # Step 5: Compute geometry features (mask-aware)
+#     pairwise_dist = pair_wise_distances(ca_coords, mask)
+#     bond_vecs = backbone_vectors(ca_coords, mask)            # (B, Lmax-1, 3)
+
+#     return {
+#         "coords": coords_padded,
+#         "ca_coords": ca_coords,
+#         "pairwise_dist": pairwise_dist,
+#         "bond_vecs": bond_vecs,
+#         "mask": mask,
+#         "lengths": lengths,
+#         "names": names,
+#     }
+
+#with dihedrals
+def protein_collate_fn(batch):
+    """
+    Collate variable-length proteins into padded tensors + masks + geometry features.
+    """
+    # Step 1: lengths + names
+    lengths_list = [item["length"] for item in batch]
+    names = [item["name"] for item in batch]
+
+    B = len(batch)
+    Lmax = max(lengths_list)
+
+    # Step 2: padded tensors
     coords_padded = torch.zeros((B, Lmax, 3, 3), dtype=torch.float32)
     mask = torch.zeros((B, Lmax), dtype=torch.bool)
 
-    #Step 3: Fill in real values
+    # Step 3: fill real residues
     for i, item in enumerate(batch):
         L = item["length"]
-        coords = item["coords"] #shape (l,3,3)
-
+        coords = item["coords"]  # (L, 3, 3)
         coords_padded[i, :L, :, :] = coords
-        mask[i, :L] = 1 #marks real residues
-    '''
-    Imagine batch of 2 proteins:
-    •	P0: length 5
-    •	P1: length 3
-    •	Lmax = 5
-    we get:
-        coords_padded[0, 0:5] = P0 coords
-        mask[0] = [1,1,1,1,1]
+        mask[i, :L] = True
 
-        coords_padded[1, 0:3] = P1 coords
-        coords_padded[1, 3:5] = zeros (kept from initialization)
-        mask[1] = [1,1,1,0,0]
-    So now we have:
-    •	coords_padded.shape == (B, Lmax, 3, 3)
-    •	mask.shape == (B, Lmax)
+    lengths = torch.tensor(lengths_list, dtype=torch.long)
 
-    '''
-    lengths = torch.tensor(lengths, dtype=torch.long)
-    # After padding coords_padded
-    ca_coords = coords_padded[:, :, 1, :]  # (B, L, 3)
+    # Step 4: CA coords
+    ca_coords = coords_padded[:, :, 1, :]  # (B, Lmax, 3)
 
-    # Step 5: Compute geometry features (mask-aware)
-    pairwise_dist = pair_wise_distances(ca_coords, mask)
-    bond_vecs = backbone_vectors(ca_coords, mask)            # (B, Lmax-1, 3)
+    # Step 5: geometry features (mask-aware)
+    pairwise_dist = pairwise_distances(ca_coords, mask)   # (B, Lmax, Lmax)
+    bond_vecs = backbone_vectors(ca_coords, mask)         # (B, Lmax-1, 3)
+
+    # Step 6: torsion angles from CA (mask-aware)
+    torsion_angles, torsion_mask = ca_torsion_angles(ca_coords, mask)  # (B, Lmax-3), (B, Lmax-3)
+    torsion_sincos = angle_sin_cos(torsion_angles)                     # (B, Lmax-3, 2)
+    torsion_sincos = torsion_sincos * torsion_mask.unsqueeze(-1)       # zero invalid
+
+    # Step 7: inpainting masks (contiguous)
+    inpaint_mask = make_inpaint_mask(lengths, Lmax)  # (B, Lmax) True = hidden region
+
+    # visible residues = real residues AND not inpainted
+    visible_mask = mask & (~inpaint_mask)            # (B, Lmax)
 
     return {
-        "coords": coords_padded,
-        "ca_coords": ca_coords,
-        "pairwise_dist": pairwise_dist,
-        "bond_vecs": bond_vecs,
-        "mask": mask,
-        "lengths": lengths,
-        "names": names,
+        "coords": coords_padded,            # (B, Lmax, 3, 3)
+        "ca_coords": ca_coords,             # (B, Lmax, 3)
+        "pairwise_dist": pairwise_dist,     # (B, Lmax, Lmax)
+        "bond_vecs": bond_vecs,             # (B, Lmax-1, 3)
+        "torsion_angles": torsion_angles,   # (B, Lmax-3)
+        "torsion_sincos": torsion_sincos,   # (B, Lmax-3, 2)
+        "torsion_mask": torsion_mask,       # (B, Lmax-3)
+        "mask": mask,                       # (B, Lmax)
+        "inpaint_mask": inpaint_mask,       # (B, Lmax)
+        "visible_mask": visible_mask,       # (B, Lmax)
+        "lengths": lengths,                 # (B,)
+        "names": names,                     # list[str]
     }
+
+
+
+
+
 
 
 def create_dataloader(folder_path, batch_size=4, shuffle=True, num_workers=0):
