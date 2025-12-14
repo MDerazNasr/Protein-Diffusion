@@ -1,0 +1,27 @@
+By the end of today you will have:
+
+✅ dihedral_angles() implemented (the “twist” angle between planes)
+
+✅ a safe ML encoding: sin(angle) and cos(angle) (super important)
+
+✅ an inpainting mask generator (mask a contiguous region per protein)
+
+✅ dataset batches that include:
+
+angles_sin_cos
+
+inpaint_mask
+
+visible_mask (what the model is allowed to see)
+
+✅ a test script that prints shapes + sanity checks
+
+
+Part A - dihedral_angles
+
+Why distances/vectors aren't enough
+
+- distances tell you how far apart residues are
+- bind vectors tells you direction between residues
+but proiteuns also care about how the chain twists
+
