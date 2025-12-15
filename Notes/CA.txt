@@ -1,0 +1,152 @@
+**CA** means **C-alpha (Cα)**.
+
+Let’s break that down cleanly and intuitively.
+
+---
+
+## What C-alpha (CA) is
+
+In **every amino acid residue**, there is a **central carbon atom** called **C-alpha**:
+
+* It’s the carbon that:
+
+  * connects the **backbone**
+  * anchors the **side chain**
+* It sits between:
+
+  * the **amine nitrogen (N)**
+  * the **carbonyl carbon (C)**
+
+So the backbone goes:
+
+```
+N — Cα — C
+```
+
+That middle one is **CA**.
+
+---
+
+## Why it’s called “alpha”
+
+* Carbons in organic chemistry are named relative to a functional group.
+* The carbon **next to** the main functional group is called **α (alpha)**.
+* In amino acids, that central carbon is the α-carbon.
+
+Hence:
+
+* Cα
+* Written as `CA` in code and PDB files.
+
+---
+
+## What CA does in protein structure
+
+Each residue has **exactly one CA atom**.
+
+CA:
+
+* defines the **position of the residue in space**
+* forms the **backbone trace**
+* connects backbone geometry to side chains
+
+If you draw a protein as a smooth curve → you are almost always drawing the **CA trace**.
+
+---
+
+## Why CA is so important in ML / diffusion models
+
+### 1. One CA per residue
+
+This gives you a **1-to-1 mapping**:
+
+```
+residue i  ↔  CA[i]
+```
+
+Perfect for tensors:
+
+```
+(B, L, 3)
+```
+
+### 2. CA captures global fold
+
+Even without side chains:
+
+* helices
+* sheets
+* loops
+  are all visible from CA positions.
+
+### 3. Fewer atoms = simpler learning
+
+Full atom model:
+
+* ~10–20 atoms per residue
+
+CA-only model:
+
+* 1 atom per residue
+
+This dramatically:
+
+* reduces memory
+* reduces noise
+* simplifies geometry
+
+---
+
+## Why your code uses CA specifically
+
+In your code:
+
+```python
+ca_coords = coords_padded[:, :, 1, :]
+```
+
+That means:
+
+* atom index `1` = CA
+* index `0` = N
+* index `2` = C
+
+So you’re extracting **only Cα positions**.
+
+Then you compute:
+
+* distances between residues
+* bond vectors along the chain
+* torsion angles from 4 consecutive Cα atoms
+
+All of that is built on CA geometry.
+
+---
+
+## CA torsion vs backbone φ / ψ (important distinction)
+
+| Type       | Atoms used                  | Meaning               |
+| ---------- | --------------------------- | --------------------- |
+| φ (phi)    | Cᵢ₋₁ – Nᵢ – Cαᵢ – Cᵢ        | backbone rotation     |
+| ψ (psi)    | Nᵢ – Cαᵢ – Cᵢ – Nᵢ₊₁        | backbone rotation     |
+| CA torsion | Cαᵢ – Cαᵢ₊₁ – Cαᵢ₊₂ – Cαᵢ₊₃ | coarse backbone twist |
+
+CA torsions are **not physically exact φ/ψ**, but they:
+
+* correlate strongly with fold
+* are stable and smooth
+* work very well in ML models
+
+---
+
+## One-sentence explanation you should memorize
+
+> **CA means C-alpha, the central backbone carbon of each amino acid residue, and using CA coordinates gives a one-point-per-residue representation of protein structure.**
+
+If you want next, I can:
+
+* map CA torsions to secondary structure (helix/sheet)
+* explain why 4 Cα atoms are enough to define a dihedral
+* show how CA models upscale to full-atom models
+
+Just say the word.
