@@ -1,5 +1,72 @@
 DIFFUSION
 
+In this project, diffusion is a way to generate valid protein structures by learning how to reverse corruption
+
+You are using a diffusion model as a generative process over protein geometry.
+
+Basically:
+- you start with a correct protein backbone
+- then you slowly destroy it
+- then you train a model to undo that destruction step by step
+
+The undoing then creates new protein structures
+
+
+What is being diffused?
+- protein backbone co-ordinates
+- usually the CA positions & also distances, bond vectors, angles, torsions
+- x₀ = real protein structure
+
+What is noise?
+- noise is deliberate geometric corruption/ random displacement added the protein sructure
+- math: x_t = √(α_t) · x₀ + √(1 − α_t) · ε
+Where:
+	•	x₀ = clean protein coordinates
+	•	ε = random Gaussian noise (same shape as x₀)
+	•	x_t = corrupted protein at timestep t
+
+what does it do exactly?
+- moves atoms slightly off their true postions
+- breaks bond lengths
+- Destroys angles and torsions
+- Evenetually turns the protein into a random cloud
+
+At t = 0 → perfect protein
+At t = T → meaningless 3D soup
+
+why add noise?
+--> you cannot directly train a model to generate proteins from nothing
+--> but you can train it to fix a slightly broken protein and have it learn from that
+(Ask the model to predict the noise (or the clean structure)
+
+
+Why this generates new proteins
+- during sampling, start with pure noise
+x_T ~ N(0, I)
+
+- apply the learned denoising step
+- slightly reduce noise
+- repeat T -> 0
+
+Each step:
+- adds structure
+- restores geometry
+- Enforces learned protein priors
+
+Noise → backbone → plausible protein fold
+
+Analogy -
+Imagine:
+	•	You shake a perfectly built Lego structure
+	•	Pieces drift apart randomly
+	•	You train a robot to watch intermediate states and reassemble them
+	•	Now you give the robot random Lego piles
+	•	It builds new, valid structures
+
+Noise = shaking
+Diffusion = controlled shaking
+Reverse diffusion = learned rebuilding
+
 right now we have clean Carbon-alpha (CA) coordinates:
 
 x0 = true data (a real backbone)
@@ -25,8 +92,8 @@ L = || ε − ε_θ(xₜ, t) ||²
 Once the model learns to predict noise well, you can reverse the process to generate new samples.
 
 we will implement:
-- noise schedule
-- forward denoiser
-- baseline denoiser
-- masked loss
+- noise schedule (β, α, ᾱ)
+- forward denoiser - adding noise
+- baseline denoiser - MLP + simple 1D Conv for mixing across residues
+- masked loss - ignores padding, optionally train only masked region
 - Training loop
