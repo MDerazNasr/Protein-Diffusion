@@ -243,5 +243,32 @@ class SimpleCADenoiser(nn.Module):
         - forward diffusion sampling
         - training loss
         '''
+        def __init__(self, T=1000, beta_start=1e-4, beta_end=2e-2, time_dim=12, hidden=256):
+            super().__init__() #initialise module
+            self.schedule = DiffusionSchedule(T=T, beta_start=beta_start, beta_end=beta_end) 
+            self.denoiser = SimpleCADenoiser(time_dim=time_dim, hidden=hidden) 
+        
+        def to(self, device):
+            super().to(device)
+            self.schedule.to(device)
+            return self
+        
+        def center_coords(self, x, mask):
+            '''
+            Remove translation by centering coordinates per protein.
+            This helps because proteins can be anywhere in space.
+            proteins are only meaningful up to rigid transformations
+            centering eliminates 'where it is in space' as a nuisance factor
+            '''
+            #mask: (B,L) bool
+            m = mask.unsqueeze(-1).float() #(B,L,1)
+            denom = m.sum(dim=1, keepdim=True).clamp(min=1.0) #(B,1,1)
+            mean = (x * m).sum(dim=1, keepdim=True) / denom
+            return x - mean
+        
+        def q_sample(self, x0, t, noise):
+            pass
+
+
 
 
