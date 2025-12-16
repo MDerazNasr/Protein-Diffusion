@@ -184,5 +184,50 @@ class SimpleCADenoiser(nn.Module):
             nn.SiLU(),
             nn.Linear(hidden, 3),
         )
+    #the method that will be called by pytorch when you do model(x)
+    def forward(self, x_t, t, mask=None):
+        '''
+        x_t - (B, L, 3) noisy coords
+        t: (B, ) timestep integers 
+        mask: (B, L) bool
+        '''
+
+        B, L, _ = x_t.shape #unpack shapes
+
+        #Creates (B, time_dim) embedding'
+        t_emb = sinusodial_timestep_embedding(t, dim=self.time_dim) 
+        #Produces (B, hidden) learned time feature
+        t_feat = self.time_mlp(t_emb)
+        #xyz -> hidden (B, L, hidden)
+        h = self.in_proj(x_t)
+        # Add timestep conditioning to every residue:
+        # t_feat (B, hidden) -> (B,1,hidden) -> broadcast to (B,L,hidden)
+        h += t_feat.unsqueeze(1)
+        '''
+        t_feat is (B, hidden)
+        .unsquee... makes it (B, 1, hidden)
+        Broadcasting adds that same time vector to all residues:
+        - (B, L, hidden) + (B, 1, hidden) -> (B, L, hidden)
+
+        why - conditions every residue feature on diffusion timestep
+        '''
+        #conv mixing across residues:
+        #(B, L, hidden) -> (B, hidden, L)
+        #why - conv1d expects channels first (B, C, L)
+        h_conv = h.transpose(1,2) 
+        h = self.conv(h_conv)
+        #back to (B, L, hidden)
+        h_conv = h.transpose(1,2)
+
+        # this is the networks predition of the Gaussian noise added at timestep t
+        eps_pred = self.out_proj(h) # Outputs (B, L, 3)
+
+        #Zero out predictions on padding if mask provided (not required but neat)
+        if mask is not None:
+            eps_pred = eps_pred * mask.unsqueeze(-1) #(B, L) -> (B, L, 1)
+            #Broadcast multiplication zeros out predictions on padded residues.
+            #neat because you’ll mask loss anyway, but this reduces useless outputs.
+        
+        return eps_pred
 
 
