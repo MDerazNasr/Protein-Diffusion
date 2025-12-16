@@ -1,7 +1,7 @@
 """Diffusion model backbone for protein structure generation."""
 import math
 import torch
-import torch.nn #neural network module
+import torch.nn as nn #neural network module
 import torch.nn.functional as F #functional versions of operations/layers
 
 
@@ -77,3 +77,112 @@ def linear_beta_schedule(T, beta_start=1e-4, beta_end=2e-2, device="cpu"):
     #returns betas shape (T, )
 
     return torch.linspace(beta_start, beta_end, T, device=device, dtype=torch.float32)
+
+class DiffusionSchedule:
+    '''
+    Docstring says:
+        alpha_t = 1 - beta_t
+        alpha_bar_t = ∏_{s=0..t} alpha_s
+        Those are the standard DDPM terms.
+
+    stores diffusion schedule terms for DDPM:
+        beta_t, alpha_t = 1-beta_t, alpha_bar_t = prod alpha_0..t
+    '''
+
+    def __init__(self):
+        self.T = T
+        betas = linear_beta_schedule(T, beta_start, beta_end, device=device) #builds beta tensor
+        alphas = 1.0 - betas #subtract element wise
+        '''
+        cumprod - cumulative product
+        dim=0 coz its a 1D tensor
+        alpha_bar[t] = alphas[0]*alphas[1]*...*alphas[t].
+        '''
+        alpha_bar = torch.cumprod(alphas, dim=0) 
+
+        self.betas = betas #(T, )
+        self.alphas = alphas #(T, )
+        self.alpha_bar = alpha_bar #(T, )
+
+    #convienience method to move schedule tensors to GPU/CPU
+    def to(self, device):
+        self.betas = self.betas.to(device)
+        self.alphas = self.alphas.to(device)
+        self.alpha_bar = self.alpha_bar.to(device)
+        return self
+
+#simple denoiser network
+'''
+Inherits from nn.Module:
+gives you parameter registration
+.to(device), .parameters(), training/eval modes, etc.
+'''
+#This network predicts epsilon noise (the DDPM objective)
+# - input: noisy coords x_t and timestep t
+# - output: predicted noise ε̂
+
+class SimpleCADenoiser(nn.Module):
+    '''
+    A simple baseline denoiser:
+    - per-residue feature
+    - lightweight 1D conv to mix information along the sequence
+    - predicts epislon noise for each residue coordinate
+
+    Input - x_t (B, L, 3), timestep t (B, ), mask (B,L)
+    Output - eps_pred (B, L, 3)
+    '''
+
+    def __init__(self, time_dim=128, hidden=256, conv_channels=256):
+        '''
+        Calls base nn.Module constructor.
+        Required so PyTorch sets up internals.
+        '''
+        super().__init__()
+        self.time_dim = time_dim #stores it.
+
+        #Embed timestep
+        self.time_mlp = nn.Sequential( #chains layers in order
+            nn.Linear(time_dim, hidden), #chains linear layer - xWT+b
+            #activation funct (a smooth nonlinearity)
+            nn.SiLU(), #SiLU is like x * sigmoid(x)
+            #why time_mlp - convert sinusoidal timestep embedding into a learned conditioning vector.
+            nn.Linear(hidden, hidden),
+        )
+        #project xyz -> hidden
+        self.in_proj = nn.Sequential( #projexts xyz coordinates to hidden features
+            nn.Linear(3, hidden), 
+            nn.SiLU(), 
+            nn.Linear(hidden, hidden),#maps (x,y,z) to hidden vector per residue
+        )
+        
+        #Mix along sequence eith Convulational 1d (cheap + effective baseline)
+        #Conv 1d expects (B, C, L)
+        #mixes information along the residue sequence
+        '''
+            hidden = input channels
+            conv_channels = intermediate channels
+            kernel_size = 3 #means it looks at neighbors (i-1, i+1)
+            padding = 1 #keeps the length the same
+
+            Then SiLU, then another Conv1d back to hidden.
+
+            why conv:
+            - 'cheap baseline' that lets residues see nearby residues
+            - not rotation-equivariant, not graph-based - just a simple mixing layer
+            '''
+        self.conv = nn.Sequential(
+
+            nn.Conv1d(hidden,conv_channels, kernel_size=3, padding=1), #Conv1d expects input shape (B,C,L)
+            nn.SiLU(),
+            nn.Conv1d(conv_channels, hidden, kernel_size=3, padding=1),
+            nn.SiLU(),
+        )
+        #Output head: -> 3 (predict noise in xyz)
+        #maps hidden features back to 3 numbers: predicted noise in xyz
+        self.out_proj = nn.Sequential(
+            nn.Linear(hidden, hidden),
+            nn.SiLU(),
+            nn.Linear(hidden, 3),
+        )
+
+
