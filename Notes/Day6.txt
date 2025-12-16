@@ -24,3 +24,9 @@ L = || ε − ε_θ(xₜ, t) ||²
 
 Once the model learns to predict noise well, you can reverse the process to generate new samples.
 
+we will implement:
+- noise schedule
+- forward denoiser
+- baseline denoiser
+- masked loss
+- Training loop
