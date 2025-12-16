@@ -62,3 +62,18 @@ def sinusodial_timestep_embedding(t, dim=128):
         emb = torch.cat([emb, torch.zeros((emb.shape[0], 1), device=t.device)], dim=1)
     return emb
 
+#Noise schedule
+def linear_beta_schedule(T, beta_start=1e-4, beta_end=2e-2, device="cpu"):
+    '''
+    Linear schedule from beta-start to beta_end over T steps.
+    Returns betas: (T, )
+
+    T - number of diffusion steps
+    beta_start, beta_end = noise variance range
+    device="cpu" default
+    '''
+
+    #torch.linspace(a,b,T) makes T evenly spaced values from a to b
+    #returns betas shape (T, )
+
+    return torch.linspace(beta_start, beta_end, T, device=device, dtype=torch.float32)
