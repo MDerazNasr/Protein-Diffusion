@@ -229,5 +229,19 @@ class SimpleCADenoiser(nn.Module):
             #neat because you’ll mask loss anyway, but this reduces useless outputs.
         
         return eps_pred
+    
+    # Diffusion model wrapper
+    class BackboneDiffusionModel(nn.Module):
+        '''
+        Wraps a denoiser + schedule, implements:
+        - forward diffusion: q(x_t | x_0)
+        - training loss: MSE between true noise and predicted noise
+
+        wraps:
+        - schedule (betas/alphas)
+        - denoiser network
+        - forward diffusion sampling
+        - training loss
+        '''
 
 
