@@ -304,17 +304,56 @@ class SimpleCADenoiser(nn.Module):
             '''
 
 
-            def training_loss(self, x0, mask, inpaint_mask=None):
-                '''
-                Compute diffusion training techniques
-                x0: (B, L, 3) clean CA coords (padded)
-                mask: (B, L) True for real residues
-                inpaint_mask: (B, L) True for masked region (optional)
+        def training_loss(self, x0, mask, inpaint_mask=None):
+            '''
+            Compute diffusion training techniques
+            x0: (B, L, 3) clean CA coords (padded)
+            mask: (B, L) True for real residues
+            inpaint_mask: (B, L) True for masked region (optional)
 
-                Strategy:
-                - Always ignore padding using mask.
-                - If inpaint_mask is provided, compute loss ONLY on masked region
-                (this trains the model to "fill in missing parts" like RFdiffusion).
-                '''
+            Strategy:
+            - Always ignore padding using mask.
+            - If inpaint_mask is provided, compute loss ONLY on masked region
+            (this trains the model to "fill in missing parts" like RFdiffusion).
+            '''
+            device = x0.device
+            B, L, _ =  x0.shape
+
+            #sample random timesteps per protein
+            t = torch.randint(0, self.schedule.T, (B,), device=device, dtype=torch.long)
+
+            #sample noise
+            noise = torch.randn_like(x0)
+
+            #center x0_centered (remove transaltion)
+            x0_centered = self.center_coords(x0, mask)
+
+            # Create noisy input x_t
+            x_t = self.q_sample(x0_centered, t, noise)
+
+            # Predict noise
+            eps_pred = self.denoiser(x_t, t, mask=mask)
+
+            # Decide where loss is computed
+            loss_mask = mask
+            if inpaint_mask is not None:
+                # train only on inpaint region, but still within valid residues
+                loss_mask = mask & inpaint_mask
+                # if inpaint mask accidentally has no True values, fall back to full mask
+                if loss_mask.sum() == 0:
+                    loss_mask = mask
+
+            # MSE per point
+            mse = (noise - eps_pred) ** 2  # (B, L, 3)
+
+            # Apply mask: (B,L,1)
+            mse = mse * loss_mask.unsqueeze(-1)
+
+            # Average over valid entries
+            denom = loss_mask.sum().clamp(min=1).float() * 3.0
+            loss = mse.sum() / denom
+
+            return loss
+
 
                 
