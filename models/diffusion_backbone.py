@@ -327,6 +327,7 @@ class BackboneDiffusionModel(nn.Module):
 
         #center x0_centered (remove transaltion)
         x0_centered = self.center_coords(x0, mask)
+        x0_centered, _ = self.normalize_scale(x0_centered, mask)
 
         # Create noisy input x_t
         x_t = self.q_sample(x0_centered, t, noise)
@@ -526,6 +527,7 @@ class BackboneDiffusionModel(nn.Module):
         #   Even if you centered during training, the reverse sampling can still drift due to noise.
         #   Centering produces a canonical placement (mean at 0).
         x0 = self.center_coords(x_t, mask)
+        x0, _ = self.normalize_scale(x0, mask)  # keep samples in sane scale
         return x0
 
     @torch.no_grad()
@@ -583,3 +585,18 @@ class BackboneDiffusionModel(nn.Module):
         
         x0 = self.center_coords(x_t, visible_mask | inpaint_mask)
         return x0
+
+    def normalize_scale(self, x, mask, eps=1e-8):
+        '''
+        Normalise per-protein scale so cooridnates have ~unit RMS radius.
+        Returns normalized x and the scale factor so we can undo later if needed.
+        '''
+
+        m = mask.unsqueeze(-1).float() # (B,L,1)
+        denom = m.sum(dim=1, keepdim=True).clam(min=1.0)
+
+        # RMS distance from origin (after centering)
+        rms = torch.sqrt(((x**2) * m).sum(dim=(1,2), keepdim=True) / (denom * 3.0) + eps)
+
+        x_norm = x / rms
+        return x_norm, rms

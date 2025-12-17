@@ -38,6 +38,16 @@ def main():
 
     print(f"Saved sample to: {out_path}")
 
+    print("CA min/max:", ca.min().item(), ca.max().item())
+    print("CA mean norm:", ca.norm(dim=-1).mean().item())
+
+    d = (ca[:, 1:, :] - ca[:, :-1, :]).norm(dim=-1)  # (B, L-1)
+    print("CA-CA distance mean:", d.mean().item())
+    print("CA-CA distance min/max:", d.min().item(), d.max().item())
+    print("Any NaNs in coords:", torch.isnan(ca).any().item())
+
 
 if __name__ == "__main__":
     main()
+
+
