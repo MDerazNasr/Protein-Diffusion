@@ -112,37 +112,39 @@ This still captures “twistiness” of the chain and is a common feature in qui
 '''
 #compute backbone dihedrals from CA atoms (simple, stable )
 def ca_torsion_angles(ca_coords, mask=None):
-    '''
-    Compute torsion (dihedral angles) using 4 consecutive CA atoms
+    """
+    Compute torsion (dihedral) angles using 4 consecutive CA atoms.
 
     Args:
-        ca_coords - tensor (B, L, 3)
-        mask - Optional bool tensor (B,L)
-    
-    Returns: 
-        Angles: Tensor (B, L-)
-    '''
+        ca_coords: Tensor (B, L, 3)
+        mask: Optional bool tensor (B, L)
+
+    Returns:
+        angles: Tensor (B, L-3) in radians
+        angles_mask: bool tensor (B, L-3) valid entries
+    """
     B, L, _ = ca_coords.shape
     if L < 4:
-        angles = torch.zeros((B, 0), device=ca_coords.device, dtype=ca_coords.dtype)
+        angles = torch.zeros((B, 0), device=ca_coords.device)
         angles_mask = torch.zeros((B, 0), dtype=torch.bool, device=ca_coords.device)
+        return angles, angles_mask
+
+    p0 = ca_coords[:, :-3, :]
+    p1 = ca_coords[:, 1:-2, :]
+    p2 = ca_coords[:, 2:-1, :]
+    p3 = ca_coords[:, 3:, :]
+
+    angles = dihedral_angles_from_points(p0, p1, p2, p3)
+
+    if mask is None:
+        angles_mask = torch.ones_like(angles, dtype=torch.bool)
     else:
-        # Compute angles using 4 consecutive CA atoms: CA[i], CA[i+1], CA[i+2], CA[i+3]
-        # This gives us L-3 angles
-        angles = dihedral_angles_from_points(
-            ca_coords[:, :-3, :],  # CA[i]
-            ca_coords[:, 1:-2, :],  # CA[i+1]
-            ca_coords[:, 2:-1, :],  # CA[i+2]
-            ca_coords[:, 3:, :]     # CA[i+3]
-        )  # (B, L-3)
-        
         # Angle is valid only if all 4 residues exist
-        if mask is not None:
-            angles_mask = mask[:, :-3] & mask[:, 1:-2] & mask[:, 2:-1] & mask[:, 3:]
-        else:
-            angles_mask = torch.ones((B, L-3), dtype=torch.bool, device=ca_coords.device)
-    
+        angles_mask = mask[:, :-3] & mask[:, 1:-2] & mask[:, 2:-1] & mask[:, 3:]
+
+    angles = angles * angles_mask  # zero out invalid
     return angles, angles_mask
+
 
 def angle_sin_cos(angle):
     '''

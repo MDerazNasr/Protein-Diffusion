@@ -33,7 +33,7 @@ def sinusodial_timestep_embedding(t, dim=128):
     freq.shape = (half,)
     '''
     freqs = torch.exp( # e^x on a tensor
-        -math.log(10000) * torch.arrange(0, half, dtype=torch.float32, device=t.device) / (half - 1)
+        -math.log(10000) * torch.arange(0, half, dtype=torch.float32, device=t.device) / (half - 1)
     )
     # t is (B, ), freqs is (half,) -> (B, half)
     '''
@@ -89,7 +89,7 @@ class DiffusionSchedule:
         beta_t, alpha_t = 1-beta_t, alpha_bar_t = prod alpha_0..t
     '''
 
-    def __init__(self):
+    def __init__(self, T=1000, beta_start=1e-4, beta_end=2e-2, device="cpu"):
         self.T = T
         betas = linear_beta_schedule(T, beta_start, beta_end, device=device) #builds beta tensor
         alphas = 1.0 - betas #subtract element wise
@@ -214,10 +214,10 @@ class SimpleCADenoiser(nn.Module):
         #conv mixing across residues:
         #(B, L, hidden) -> (B, hidden, L)
         #why - conv1d expects channels first (B, C, L)
-        h_conv = h.transpose(1,2) 
-        h = self.conv(h_conv)
-        #back to (B, L, hidden)
-        h_conv = h.transpose(1,2)
+        h_conv = h.transpose(1, 2)           # (B, hidden, L)
+        h_conv = self.conv(h_conv)           # (B, hidden, L)
+        # back to (B, L, hidden) for the linear head
+        h = h_conv.transpose(1, 2)
 
         # this is the networks predition of the Gaussian noise added at timestep t
         eps_pred = self.out_proj(h) # Outputs (B, L, 3)
