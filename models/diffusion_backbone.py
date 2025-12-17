@@ -513,7 +513,7 @@ class BackboneDiffusionModel(nn.Module):
                 - Using (B,) lets you support the general case where each sample could have a different t.
                 - Here you choose the same step for all.
             '''
-            t = torch.full((B,), step, device=device, dtupe=torch.long)
+            t = torch.full((B,), step, device=device, dtype=torch.long)
             #calls your reverse step
             #inputs (x_t - current noisy coords). t timestep tensor, mask for padding
             #output - updated coords, x_t becomes slightlt less noisy and more protein-like structure
