@@ -422,7 +422,6 @@ class BackboneDiffusionModel(nn.Module):
         eps_pred = self.denoiser(x_t, t, mask=mask) #(B,L,3)
 
         #DDPM mean
-        
         mean = (1.0/ torch.sqrt(alpha_t)) * (x_t - (beta_t / torch.sqrt(1.0 - alpha_bar_t)) * eps_pred)
 
         #Noise for stochasticity (except at t=0)
@@ -446,6 +445,9 @@ class BackboneDiffusionModel(nn.Module):
         return x_prev
     
     #full sampling loop
+    #here we input B, L
+    #Because during generation, there is no “input embedding” yet 
+    #creating the data from scratch, so the only things you need are the shape and where to put it.
     @torch.no_grad()
     def sample_ca(self, B, L, device, mask=None):
         '''
@@ -526,6 +528,7 @@ class BackboneDiffusionModel(nn.Module):
         x0 = self.center_coords(x_t, mask)
         return x0
 
+    
 
 
 
