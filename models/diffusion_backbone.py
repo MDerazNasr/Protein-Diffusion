@@ -528,12 +528,58 @@ class BackboneDiffusionModel(nn.Module):
         x0 = self.center_coords(x_t, mask)
         return x0
 
-    
+    @torch.no_grad()
+    def sample_inpaint(self,x_visible, visible_mask, inpaint_mask): #generate missing parts while keeping visible parts fixed
+        '''
+            Inpainting sampling:
+            - visible_mask: True where coords are known/fixed
+            - inpaint_mask: True where coords should be generated
 
+            Args:
+                x_visible: (B, L, 3) contains real coords where visible_mask is True
+                    holds the known coordinates only where visible_mask is True
+                    elsewhere can be zeros/garbage; mask decides what counts                
+                visible_mask: (B, L) bool
+                inpaint_mask: (B, L) bool
+                    True where coords should be generated
 
+            Returns:
+                x0: (B, L, 3) completed coords
+            
+            what this algo does:
+                Start with random noise for all residues.
+                Insert the known coordinates into the visible region.
+                Run reverse diffusion from T-1 down to 0.
+                After every reverse step, overwrite the visible region with the true coordinates.
+                At the end, return the completed structure.
+            IMP Notes
+            1) Are visible coords centered the same way as training?
+                In training you center x0 before noising. Here you center at the end. That’s okay, but some pipelines also center visible coords upfront to make conditioning consistent.
+            2) Overlap between masks
+                If visible_mask and inpaint_mask overlap:
+                visible wins (because you overwrite it)
+                but it’s logically inconsistent. Usually you ensure they’re disjoint.
+            3) This is CA-only
+                Inpainting CA coords gives a coarse completion; later you’d reconstruct full backbone/side chains
+        '''
 
+        device = x_visible.device
+        B,L,_ = x_visible.shape
 
+        #start x_t as noise everywhere
+        x_t = torch.randn((B,L,3), device=device) #_ throws away the 3
 
+        #but copy visiblke coords in initially (helps)
+        x_t = torch.where(visible_mask.unsqueeze(-1), x_visible, x_t)
 
+        for step in reversed(range(self.schedule.T)):
+            t = torch.full((B,), step, device=device, dtype=torch.long)
+            
+            #Reverse sample
+            x_t = self.p_sample(x_t, t, mask=(visible_mask | inpaint_mask))
 
-                
+            #Re impose visible coords at every step (hard constraint)
+            x_t = torch.where(visible_mask.unsqueeze(-1), x_visible, x_t)
+        
+        x0 = self.center_coords(x_t, visible_mask | inpaint_mask)
+        return x0
