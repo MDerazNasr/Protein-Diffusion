@@ -354,6 +354,100 @@ class BackboneDiffusionModel(nn.Module):
         loss = mse.sum() / denom
 
         return loss
+    
+    #p_sample reverse step
+    @torch.no_grad() #modifier tells Pytorch do not track gradients in this function
+    #this means, no backround graphing, less memory so faster
+    #here because sampling is used at inference time, not training and you dont neeed gradients to generate a protein
+    def p_sample(self, x_t, t, mask=None):
+        '''
+        One reverse diffusion step: sample x_{t-1} from x_t
+
+        Args:
+            x_t: (B,L,3)
+            t: (B,) long, same timestep for each batch element usually
+            mask:(B,L) bool for valid residues
+
+        Returns:
+            x_prev: (B,L,3) 
+
+        MEMORISE THS:
+        - at each reverse step you do:
+            1. use the network to predict noise
+            2. convert that into a mean estimate for xt-1
+            3. add gaussian noise with variance tied to the schedule (unless t=0)'
+        - 2 imp notes
+        Why use alpha_bar_t in the mean?
+            Because alpha..._t represents “how much of the original signal survives after t steps”, 
+            so it lets you properly scale the noise prediction.
+
+        Why sigma_t = sqrt(beta_t)?
+            It’s a common simple choice. Some implementations use a slightly different 
+            posterior variance (a function of betas/alphas/alpha_bar). Your choice is a baseline and works, 
+            just not the only option.
+        '''
+
+        device = x_t.device
+        B = x_t.shape[0] # B = batch size, which is the first dimension in the embedding x_t
+
+        #They are 1D arrays storing the schedule across time, shape (T,)
+        betas = self.schedule.betas
+        alphas = self.schedule.alphas
+        alpha_bar = self.schedule.alpha_bar
+
+        #
+        beta_t = betas[t].view(B, 1, 1)
+        alpha_t = alphas[t].view(B, 1, 1)
+        alpha_bar_t = alpha_bar[t].view(B, 1, 1)
+
+        '''
+        betas[t]
+            t is a tensor of indices shape (B,).
+            Indexing a (T,) tensor with (B,) gives (B,):
+            beta_t[b] = betas[t[b]]
+
+        So you get a per-protein scalar value.
+            .view(B, 1, 1)
+            reshapes (B,) into (B,1,1)
+
+        Why:
+            You want to multiply it with x_t which is (B, L, 3).
+            (B,1,1) broadcasts across L and xyz cleanly:
+                each protein gets its own scalar, applied to all residues and coords.
+                Same logic for alpha_t and alpha_bar_t.
+        '''
+        #Predict noise ε_theta(x_t, t)
+        #output is the same shape as x_t, it predicts Gaussian noise comp. produced in x_t
+        # needed so we Then reverse sampling uses that prediction to “subtract noise”.
+        eps_pred = self.denoiser(x_t, t, mask=mask) #(B,L,3)
+
+        #DDPM mean
+        
+        mean = (1.0/ torch.sqrt(alpha_t)) * (x_t - (beta_t / torch.sqrt(1.0 - alpha_bar_t)) * eps_pred)
+
+        #Noise for stochasticity (except at t=0)
+        # if all batch items are at timestep 0, you stop and return the mean.
+        # This avoids adding extra noise at the final step.
+        # At t=0, the distribution should be the final sample 
+        # You don’t want stochasticity after finishing.
+        if (t == 0).all():
+            return mean
+
+        #Standard choice: sigma_t = sqrt(beta_t)
+        # add stochasticity for sampling
+        # Diffusion sampling is stochastic; this helps produce diverse samples.
+        # If you remove this term, you get a deterministic sampler (like DDIM-ish behavior), but that’s a different method.
+        noise = torch.randn_like(x_t)
+        x_prev = mean + torch.sqrt(beta_t) * noise
+
+        if mask is not None:
+            x_prev = x_prev * mask.unsqueeze(-1)
+
+        return x_prev
+
+
+
+
 
 
                 
