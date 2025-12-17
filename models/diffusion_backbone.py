@@ -586,13 +586,25 @@ class BackboneDiffusionModel(nn.Module):
         x0 = self.center_coords(x_t, visible_mask | inpaint_mask)
         return x0
 
+    #encodes geometric normalisation
+    #Normalize per-protein scale so coordinates have ~unit RMS radius.
     def normalize_scale(self, x, mask, eps=1e-8):
         '''
         Normalise per-protein scale so cooridnates have ~unit RMS radius.
         Returns normalized x and the scale factor so we can undo later if needed.
-        '''
 
+        This means:
+            Each protein is scaled so its average distance from the origin is ~1.
+            You do this per protein, not globally across the batch.
+            You return the scale (rms) so you can undo the normalization later.
+            This is scale invariance, just like centering is translation invariance.
+        '''
+        # Ignore padded residues in all computations. 
+        # Multiplying by m zeroes out padded coordinates cleanly.
         m = mask.unsqueeze(-1).float() # (B,L,1)
+
+        #keepdim keeps the summed dimension instead of collapsing it, need for broadcasting later
+        #clamp ensures denominator is at least 1
         denom = m.sum(dim=1, keepdim=True).clam(min=1.0)
 
         # RMS distance from origin (after centering)
@@ -600,3 +612,21 @@ class BackboneDiffusionModel(nn.Module):
 
         x_norm = x / rms
         return x_norm, rms
+    
+
+    def bond_length_loss(self, x, mask, eps=1e-8):
+        '''
+        Penalise bad CA-CA distances. x is (B,L,3) in normalized scale.
+        '''
+        diffs = x[:, 1:, :] - x[:, :-1, :]
+        d = torch.sqrt((diffs**2).sum(dim=-1) + eps) #(B,L-1)
+
+        valid = mask[:, 1:] & mask[:,:-1]
+        d_valid = d[valid]
+
+        if d_valid.numel() < 1:
+            return torch.tensor(0.0, device=x.device)
+        
+        #Target = current batch mean (keeps unit consistent)
+        target = d_valid.mean().detach()
+        return ((d_valid - target) ** 2).mean()

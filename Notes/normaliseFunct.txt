@@ -1,0 +1,45 @@
+hy this function exists (big picture)
+1) Scale invariance
+
+Proteins can be:
+
+large
+
+small
+
+compact
+
+extended
+
+Diffusion models work better when:
+
+inputs live on a consistent numerical scale
+
+2) Training stability
+
+If one protein has RMS ≈ 5 and another ≈ 50:
+
+gradients differ wildly
+
+optimization becomes unstable
+
+Normalizing scale:
+
+keeps numbers near 1
+
+improves conditioning
+
+3) Analogy you can say out loud
+
+Centering removes where the protein is.
+Scaling removes how big the protein is.
+
+Together:
+
+translation invariance
+
+scale invariance
+
+One-sentence summary you should memorize
+
+This function rescales each protein so its average distance from the origin is one, ignoring padding, which stabilizes diffusion by removing arbitrary size differences.
