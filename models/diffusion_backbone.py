@@ -230,130 +230,130 @@ class SimpleCADenoiser(nn.Module):
         
         return eps_pred
     
-    # Diffusion model wrapper
-    class BackboneDiffusionModel(nn.Module):
-        '''
-        Wraps a denoiser + schedule, implements:
-        - forward diffusion: q(x_t | x_0)
-        - training loss: MSE between true noise and predicted noise
+# Diffusion model wrapper
+class BackboneDiffusionModel(nn.Module):
+    '''
+    Wraps a denoiser + schedule, implements:
+    - forward diffusion: q(x_t | x_0)
+    - training loss: MSE between true noise and predicted noise
 
-        wraps:
-        - schedule (betas/alphas)
-        - denoiser network
-        - forward diffusion sampling
-        - training loss
-        '''
-        def __init__(self, T=1000, beta_start=1e-4, beta_end=2e-2, time_dim=12, hidden=256):
-            super().__init__() #initialise module
-            self.schedule = DiffusionSchedule(T=T, beta_start=beta_start, beta_end=beta_end) 
-            self.denoiser = SimpleCADenoiser(time_dim=time_dim, hidden=hidden) 
-        
-        def to(self, device):
-            super().to(device)
-            self.schedule.to(device)
-            return self
-        
-        def center_coords(self, x, mask):
-            '''
-            Remove translation by centering coordinates per protein.
-            This helps because proteins can be anywhere in space.
-            proteins are only meaningful up to rigid transformations
-            centering eliminates 'where it is in space' as a nuisance factor
-            '''
-            #mask: (B,L) bool
-            '''
-            mask (B, L) → (B, L, 1).
-            .float() converts bool → float (True=1.0, False=0.0).
-            m becomes a weighting tensor.
-            '''
-            m = mask.unsqueeze(-1).float() #(B,L,1)
-            #sum - counts how many valid residues
-            #keepdim = True keeps (B,1,1)
-            #.clamp(min=1.0) prevents division by zero, if somehow a protein had 0 valid residues
-            denom = m.sum(dim=1, keepdim=True).clamp(min=1.0) #(B,1,1)
-            #x * m zeros padded residues
-            #sum over residues gives (B,1,3)
-            #divide by denom gives masked mean coordinate
-            mean = (x * m).sum(dim=1, keepdim=True) / denom
-            return x - mean #mean becomes around 0
-        
-        def q_sample(self, x0, t, noise):
-            """
-            Forward diffusion: sample x_t = sqrt(alpha_bar_t)*x0 + sqrt(1-alpha_bar_t)*noise
-
-            x0: (B, L, 3)
-            t:  (B,) long
-            noise: (B, L, 3)
+    wraps:
+    - schedule (betas/alphas)
+    - denoiser network
+    - forward diffusion sampling
+    - training loss
+    '''
+    def __init__(self, T=1000, beta_start=1e-4, beta_end=2e-2, time_dim=12, hidden=256):
+        super().__init__() #initialise module
+        self.schedule = DiffusionSchedule(T=T, beta_start=beta_start, beta_end=beta_end) 
+        self.denoiser = SimpleCADenoiser(time_dim=time_dim, hidden=hidden) 
     
-            """
-            #gather alpha_bar[t] for each batch element
-            alpha_bar_t = self.schedule.alpha_bar[t].view(-1,1,1) #(B,1,1)
-            '''
-            self.schedule.alpha_bar is shape (T,).
-            Indexing with t (shape (B,)) gives alpha_bar_t shape (B,).
-            .view(-1, 1, 1) reshapes to (B,1,1) so it broadcasts across (B,L,3).
-            '''
-            return torch.sqrt(alpha_bar_t) * x0 + torch.sqrt(1.0 - alpha_bar_t) * noise
-            '''
-            torch.sqrt elementwise.
-                Multiplication broadcasts:
-                (B,1,1) times (B,L,3) → (B,L,3).
-                Interpretation:
-                at small t: alpha_bar close to 1 → mostly x0
-                at large t: alpha_bar small → mostly noise
-            '''
+    def to(self, device):
+        super().to(device)
+        self.schedule.to(device)
+        return self
+    
+    def center_coords(self, x, mask):
+        '''
+        Remove translation by centering coordinates per protein.
+        This helps because proteins can be anywhere in space.
+        proteins are only meaningful up to rigid transformations
+        centering eliminates 'where it is in space' as a nuisance factor
+        '''
+        #mask: (B,L) bool
+        '''
+        mask (B, L) → (B, L, 1).
+        .float() converts bool → float (True=1.0, False=0.0).
+        m becomes a weighting tensor.
+        '''
+        m = mask.unsqueeze(-1).float() #(B,L,1)
+        #sum - counts how many valid residues
+        #keepdim = True keeps (B,1,1)
+        #.clamp(min=1.0) prevents division by zero, if somehow a protein had 0 valid residues
+        denom = m.sum(dim=1, keepdim=True).clamp(min=1.0) #(B,1,1)
+        #x * m zeros padded residues
+        #sum over residues gives (B,1,3)
+        #divide by denom gives masked mean coordinate
+        mean = (x * m).sum(dim=1, keepdim=True) / denom
+        return x - mean #mean becomes around 0
+    
+    def q_sample(self, x0, t, noise):
+        """
+        Forward diffusion: sample x_t = sqrt(alpha_bar_t)*x0 + sqrt(1-alpha_bar_t)*noise
+
+        x0: (B, L, 3)
+        t:  (B,) long
+        noise: (B, L, 3)
+
+        """
+        #gather alpha_bar[t] for each batch element
+        alpha_bar_t = self.schedule.alpha_bar[t].view(-1,1,1) #(B,1,1)
+        '''
+        self.schedule.alpha_bar is shape (T,).
+        Indexing with t (shape (B,)) gives alpha_bar_t shape (B,).
+        .view(-1, 1, 1) reshapes to (B,1,1) so it broadcasts across (B,L,3).
+        '''
+        return torch.sqrt(alpha_bar_t) * x0 + torch.sqrt(1.0 - alpha_bar_t) * noise
+        '''
+        torch.sqrt elementwise.
+            Multiplication broadcasts:
+            (B,1,1) times (B,L,3) → (B,L,3).
+            Interpretation:
+            at small t: alpha_bar close to 1 → mostly x0
+            at large t: alpha_bar small → mostly noise
+        '''
 
 
-        def training_loss(self, x0, mask, inpaint_mask=None):
-            '''
-            Compute diffusion training techniques
-            x0: (B, L, 3) clean CA coords (padded)
-            mask: (B, L) True for real residues
-            inpaint_mask: (B, L) True for masked region (optional)
+    def training_loss(self, x0, mask, inpaint_mask=None):
+        '''
+        Compute diffusion training techniques
+        x0: (B, L, 3) clean CA coords (padded)
+        mask: (B, L) True for real residues
+        inpaint_mask: (B, L) True for masked region (optional)
 
-            Strategy:
-            - Always ignore padding using mask.
-            - If inpaint_mask is provided, compute loss ONLY on masked region
-            (this trains the model to "fill in missing parts" like RFdiffusion).
-            '''
-            device = x0.device
-            B, L, _ =  x0.shape
+        Strategy:
+        - Always ignore padding using mask.
+        - If inpaint_mask is provided, compute loss ONLY on masked region
+        (this trains the model to "fill in missing parts" like RFdiffusion).
+        '''
+        device = x0.device
+        B, L, _ =  x0.shape
 
-            #sample random timesteps per protein
-            t = torch.randint(0, self.schedule.T, (B,), device=device, dtype=torch.long)
+        #sample random timesteps per protein
+        t = torch.randint(0, self.schedule.T, (B,), device=device, dtype=torch.long)
 
-            #sample noise
-            noise = torch.randn_like(x0)
+        #sample noise
+        noise = torch.randn_like(x0)
 
-            #center x0_centered (remove transaltion)
-            x0_centered = self.center_coords(x0, mask)
+        #center x0_centered (remove transaltion)
+        x0_centered = self.center_coords(x0, mask)
 
-            # Create noisy input x_t
-            x_t = self.q_sample(x0_centered, t, noise)
+        # Create noisy input x_t
+        x_t = self.q_sample(x0_centered, t, noise)
 
-            # Predict noise
-            eps_pred = self.denoiser(x_t, t, mask=mask)
+        # Predict noise
+        eps_pred = self.denoiser(x_t, t, mask=mask)
 
-            # Decide where loss is computed
-            loss_mask = mask
-            if inpaint_mask is not None:
-                # train only on inpaint region, but still within valid residues
-                loss_mask = mask & inpaint_mask
-                # if inpaint mask accidentally has no True values, fall back to full mask
-                if loss_mask.sum() == 0:
-                    loss_mask = mask
+        # Decide where loss is computed
+        loss_mask = mask
+        if inpaint_mask is not None:
+            # train only on inpaint region, but still within valid residues
+            loss_mask = mask & inpaint_mask
+            # if inpaint mask accidentally has no True values, fall back to full mask
+            if loss_mask.sum() == 0:
+                loss_mask = mask
 
-            # MSE per point
-            mse = (noise - eps_pred) ** 2  # (B, L, 3)
+        # MSE per point
+        mse = (noise - eps_pred) ** 2  # (B, L, 3)
 
-            # Apply mask: (B,L,1)
-            mse = mse * loss_mask.unsqueeze(-1)
+        # Apply mask: (B,L,1)
+        mse = mse * loss_mask.unsqueeze(-1)
 
-            # Average over valid entries
-            denom = loss_mask.sum().clamp(min=1).float() * 3.0
-            loss = mse.sum() / denom
+        # Average over valid entries
+        denom = loss_mask.sum().clamp(min=1).float() * 3.0
+        loss = mse.sum() / denom
 
-            return loss
+        return loss
 
 
                 

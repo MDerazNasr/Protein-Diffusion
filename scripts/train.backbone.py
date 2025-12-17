@@ -3,14 +3,21 @@ import torch
 from torch.optim import AdamW
 from tqdm import tqdm
 
-from proteindiffusion.data.dataset import create_dataloader
-from proteindiffusion.models.diffusion_backbone import BackboneDiffusionModel
+import sys
+from pathlib import Path
+
+THIS_DIR = Path(__file__).resolve().parent
+PROJECT_ROOT = THIS_DIR.parent
+
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from data.dataset import create_dataloader
+from models.diffusion_backbone import BackboneDiffusionModel
 
 
 def main():
-    # -----------------------------
-    # Config (keep it simple today)
-    # -----------------------------
+    # Config (keep it simple for now)
     processed_folder = "data/processed"
     batch_size = 4
     lr = 2e-4
@@ -20,20 +27,12 @@ def main():
 
     os.makedirs("checkpoints", exist_ok=True)
 
-    # -----------------------------
     # Data
-    # -----------------------------
     loader = create_dataloader(processed_folder, batch_size=batch_size, shuffle=True)
-
-    # -----------------------------
     # Model
-    # -----------------------------
     model = BackboneDiffusionModel(T=T).to(device)
     optim = AdamW(model.parameters(), lr=lr)
-
-    # -----------------------------
     # Train
-    # -----------------------------
     model.train()
     global_step = 0
 
