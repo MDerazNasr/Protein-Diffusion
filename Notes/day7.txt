@@ -1,0 +1,22 @@
+REVERSE DIFFUSION
+
+Forward process (you already did):
+
+xₜ = √ᾱₜ x₀ + √(1 − ᾱₜ) ε
+
+Reverse process tries to undo this, step by step:
+
+We want to sample:
+
+xₜ₋₁ ~ p(xₜ₋₁ | xₜ)
+
+Denoising Diffusion Probabilistic Model (DDPM) gives a closed form where the mean depends on the predicted noise:
+- μₜ(xₜ) = (1/√αₜ) [ xₜ − (βₜ / √(1−ᾱₜ)) ε_θ(xₜ,t) ]
+
+And the reverse step is:
+
+xₜ₋₁ = μₜ + σₜ z, where z ~ N(0, I)
+
+At t=0: no noise is added (just take the mean).
+
+That’s literally it.
