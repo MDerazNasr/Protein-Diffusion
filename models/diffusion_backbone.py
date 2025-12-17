@@ -444,6 +444,89 @@ class BackboneDiffusionModel(nn.Module):
             x_prev = x_prev * mask.unsqueeze(-1)
 
         return x_prev
+    
+    #full sampling loop
+    @torch.no_grad()
+    def sample_ca(self, B, L, device, mask=None):
+        '''
+        Generate CA coordinates by sampling from pure noise.
+
+        Args:
+            B: Batch noise
+            L: Length of protein (number of residues)
+            device: torch device
+            mask: optional (B, L) bool. if None, assume all True.
+        
+        Returns:
+            x0: (B,L,3) generated CA coords
+
+        Notes:
+            why provide mask?
+                sometimes you want to generate variable-length proteins within a fixed (B,L) tensor
+                if mask says only first Li residues are valid, padding stays zeroed/ignored
+        
+        Memorise:
+            1. Sample a random cloud of points (Gaussian noise).
+            2. Repeatedly apply “denoise a little” steps, conditioned on the current timestep.
+            3. The cloud slowly turns into a protein-shaped curve in 3D.
+            4. Center it.
+        IMP:
+        1) This generates Cα trace only
+        It does not enforce:
+            - bond length constraints
+            - realistic backbone angles
+            - side chains
+            - physical energy
+        It’s a baseline. Later you usually add:
+            - equivariant architecture (SE(3)-aware)
+            - losses for bond geometry / torsions
+            - reconstruction to full backbone / side chains
+        2) This is ancestral sampling
+            Because you add noise each step in p_sample (except step 0), you’re sampling from a stochastic reverse chain.
+        '''
+
+        if mask is None:
+            #if you're generating a fixed-length protein, everything is valid
+            #torch.ones -> creates tensor full of ones
+            #dtype=torch.bool -> converst ones to boolean True
+            mask = torch.ones((B,L), dtype=torch.bool, device=device)
+        
+        #start from pure noise
+        #torch.randn -> samples standard normal distribution N(0,1)
+        #tthis is xT or near xT which is the fully noisy starting point
+        #the forward diffusion process makes data approachg a Gaussian, so reverse process starts from a Gaussian
+        x_t = torch.randn((B,L,3), device=device)
+
+        #Reverse loop: T-1 -> 0'
+        #Reverse diffusion literally runs backwards in time: Xt-1 ------> x0
+        #range(schedule) produces integers
+        for step in reversed(range(self.schedule.T)):
+            #torch.full makes a tensor filled with a constant.
+            # (B,) means one timestep per batch item
+            # step is the current timestep
+            #dtype=torch.long because these values index schedule arrays.
+            '''
+            why?
+                - p_sample expects t as a tensor (so it can index schedule terms).
+                - Using (B,) lets you support the general case where each sample could have a different t.
+                - Here you choose the same step for all.
+            '''
+            t = torch.full((B,), step, device=device, dtupe=torch.long)
+            #calls your reverse step
+            #inputs (x_t - current noisy coords). t timestep tensor, mask for padding
+            #output - updated coords, x_t becomes slightlt less noisy and more protein-like structure
+            x_t = self.p_sample(x_t, t, mask=mask)
+
+        #Center the final output
+        #center_coords subtracts the masked mean coordinate.
+        #This removes translation so generated proteins don’t drift off arbitrarily.
+        #Why do it at the end:
+        #   Even if you centered during training, the reverse sampling can still drift due to noise.
+        #   Centering produces a canonical placement (mean at 0).
+        x0 = self.center_coords(x_t, mask)
+        return x0
+
+
 
 
 
