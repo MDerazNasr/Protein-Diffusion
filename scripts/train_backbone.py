@@ -20,7 +20,7 @@ def main():
     # Config (keep it simple for now)
     processed_folder = "data/processed"
     batch_size = 4
-    lr = 2e-4
+    lr = 5e-5
     epochs = 5
     T = 500  # diffusion steps (smaller for faster dev)
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -31,6 +31,7 @@ def main():
     loader = create_dataloader(processed_folder, batch_size=batch_size, shuffle=True)
     # Model
     model = BackboneDiffusionModel(T=T).to(device)
+    torch.nn.utils.clip_grad_norm_(model.parameters(), 0.5)
     optim = AdamW(model.parameters(), lr=lr)
     # Train
     model.train()
@@ -47,15 +48,24 @@ def main():
             if inpaint_mask is not None:
                 inpaint_mask = inpaint_mask.to(device)
 
-            loss = model.training_loss(x0, mask, inpaint_mask=inpaint_mask)
+            loss, base, bond, clash = model.training_loss(
+                x0,
+                mask,
+                inpaint_mask=inpaint_mask
+            )
 
             optim.zero_grad()
             loss.backward()
-
-            # small stability trick
-            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-
+            torch.nn.utils.clip_grad_norm_(model.parameters(), 0.5)
             optim.step()
+
+            pbar.set_postfix(
+                loss=float(loss.item()),
+                base=float(base.item()),
+                bond=float(bond.item()),
+                clash=float(clash.item()),
+            )
+
 
             global_step += 1
             pbar.set_postfix(loss=float(loss.item()))

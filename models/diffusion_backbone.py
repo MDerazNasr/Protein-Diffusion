@@ -3,7 +3,7 @@ import math
 import torch
 import torch.nn as nn #neural network module
 import torch.nn.functional as F #functional versions of operations/layers
-
+from models.egnn import EGNNLayer
 
 #timestep embedding
 #denoiser must know whatr noise level its denoising
@@ -121,115 +121,162 @@ gives you parameter registration
 # - input: noisy coords x_t and timestep t
 # - output: predicted noise ε̂
 
-class SimpleCADenoiser(nn.Module):
-    '''
-    A simple baseline denoiser:
-    - per-residue feature
-    - lightweight 1D conv to mix information along the sequence
-    - predicts epislon noise for each residue coordinate
+# class SimpleCADenoiser(nn.Module):
+#     '''
+#     A simple baseline denoiser:
+#     - per-residue feature
+#     - lightweight 1D conv to mix information along the sequence
+#     - predicts epislon noise for each residue coordinate
 
-    Input - x_t (B, L, 3), timestep t (B, ), mask (B,L)
-    Output - eps_pred (B, L, 3)
-    '''
+#     Input - x_t (B, L, 3), timestep t (B, ), mask (B,L)
+#     Output - eps_pred (B, L, 3)
+#     '''
 
-    def __init__(self, time_dim=128, hidden=256, conv_channels=256):
-        '''
-        Calls base nn.Module constructor.
-        Required so PyTorch sets up internals.
-        '''
+#     def __init__(self, time_dim=128, hidden=256, conv_channels=256):
+#         '''
+#         Calls base nn.Module constructor.
+#         Required so PyTorch sets up internals.
+#         '''
+#         super().__init__()
+#         self.time_dim = time_dim #stores it.
+
+#         #Embed timestep
+#         self.time_mlp = nn.Sequential( #chains layers in order
+#             nn.Linear(time_dim, hidden), #chains linear layer - xWT+b
+#             #activation funct (a smooth nonlinearity)
+#             nn.SiLU(), #SiLU is like x * sigmoid(x)
+#             #why time_mlp - convert sinusoidal timestep embedding into a learned conditioning vector.
+#             nn.Linear(hidden, hidden),
+#         )
+#         #project xyz -> hidden
+#         self.in_proj = nn.Sequential( #projexts xyz coordinates to hidden features
+#             nn.Linear(3, hidden), 
+#             nn.SiLU(), 
+#             nn.Linear(hidden, hidden),#maps (x,y,z) to hidden vector per residue
+#         )
+        
+#         #Mix along sequence eith Convulational 1d (cheap + effective baseline)
+#         #Conv 1d expects (B, C, L)
+#         #mixes information along the residue sequence
+#         '''
+#             hidden = input channels
+#             conv_channels = intermediate channels
+#             kernel_size = 3 #means it looks at neighbors (i-1, i+1)
+#             padding = 1 #keeps the length the same
+
+#             Then SiLU, then another Conv1d back to hidden.
+
+#             why conv:
+#             - 'cheap baseline' that lets residues see nearby residues
+#             - not rotation-equivariant, not graph-based - just a simple mixing layer
+#             '''
+#         self.conv = nn.Sequential(
+
+#             nn.Conv1d(hidden,conv_channels, kernel_size=3, padding=1), #Conv1d expects input shape (B,C,L)
+#             nn.SiLU(),
+#             nn.Conv1d(conv_channels, hidden, kernel_size=3, padding=1),
+#             nn.SiLU(),
+#         )
+#         #Output head: -> 3 (predict noise in xyz)
+#         #maps hidden features back to 3 numbers: predicted noise in xyz
+#         self.out_proj = nn.Sequential(
+#             nn.Linear(hidden, hidden),
+#             nn.SiLU(),
+#             nn.Linear(hidden, 3),
+#         )
+#     #the method that will be called by pytorch when you do model(x)
+#     def forward(self, x_t, t, mask=None):
+#         '''
+#         x_t - (B, L, 3) noisy coords
+#         t: (B, ) timestep integers 
+#         mask: (B, L) bool
+#         '''
+
+#         B, L, _ = x_t.shape #unpack shapes
+
+#         #Creates (B, time_dim) embedding'
+#         t_emb = sinusodial_timestep_embedding(t, dim=self.time_dim) 
+#         #Produces (B, hidden) learned time feature
+#         t_feat = self.time_mlp(t_emb)
+#         #xyz -> hidden (B, L, hidden)
+#         h = self.in_proj(x_t)
+#         # Add timestep conditioning to every residue:
+#         # t_feat (B, hidden) -> (B,1,hidden) -> broadcast to (B,L,hidden)
+#         h += t_feat.unsqueeze(1)
+#         '''
+#         t_feat is (B, hidden)
+#         .unsquee... makes it (B, 1, hidden)
+#         Broadcasting adds that same time vector to all residues:
+#         - (B, L, hidden) + (B, 1, hidden) -> (B, L, hidden)
+
+#         why - conditions every residue feature on diffusion timestep
+#         '''
+#         #conv mixing across residues:
+#         #(B, L, hidden) -> (B, hidden, L)
+#         #why - conv1d expects channels first (B, C, L)
+#         h_conv = h.transpose(1, 2)           # (B, hidden, L)
+#         h_conv = self.conv(h_conv)           # (B, hidden, L)
+#         # back to (B, L, hidden) for the linear head
+#         h = h_conv.transpose(1, 2)
+
+#         # this is the networks predition of the Gaussian noise added at timestep t
+#         eps_pred = self.out_proj(h) # Outputs (B, L, 3)
+
+#         #Zero out predictions on padding if mask provided (not required but neat)
+#         if mask is not None:
+#             eps_pred = eps_pred * mask.unsqueeze(-1) #(B, L) -> (B, L, 1)
+#             #Broadcast multiplication zeros out predictions on padded residues.
+#             #neat because you’ll mask loss anyway, but this reduces useless outputs.
+        
+#         return eps_pred
+class EGNNDenoiser(nn.Module):
+    """
+    EGNN-based denoiser: predicts epsilon for x_t.
+    """
+
+    def __init__(self, time_dim=128, feat_dim=128, hidden_dim=256, layers=4):
         super().__init__()
-        self.time_dim = time_dim #stores it.
+        self.time_dim = time_dim
 
-        #Embed timestep
-        self.time_mlp = nn.Sequential( #chains layers in order
-            nn.Linear(time_dim, hidden), #chains linear layer - xWT+b
-            #activation funct (a smooth nonlinearity)
-            nn.SiLU(), #SiLU is like x * sigmoid(x)
-            #why time_mlp - convert sinusoidal timestep embedding into a learned conditioning vector.
-            nn.Linear(hidden, hidden),
-        )
-        #project xyz -> hidden
-        self.in_proj = nn.Sequential( #projexts xyz coordinates to hidden features
-            nn.Linear(3, hidden), 
-            nn.SiLU(), 
-            nn.Linear(hidden, hidden),#maps (x,y,z) to hidden vector per residue
-        )
-        
-        #Mix along sequence eith Convulational 1d (cheap + effective baseline)
-        #Conv 1d expects (B, C, L)
-        #mixes information along the residue sequence
-        '''
-            hidden = input channels
-            conv_channels = intermediate channels
-            kernel_size = 3 #means it looks at neighbors (i-1, i+1)
-            padding = 1 #keeps the length the same
-
-            Then SiLU, then another Conv1d back to hidden.
-
-            why conv:
-            - 'cheap baseline' that lets residues see nearby residues
-            - not rotation-equivariant, not graph-based - just a simple mixing layer
-            '''
-        self.conv = nn.Sequential(
-
-            nn.Conv1d(hidden,conv_channels, kernel_size=3, padding=1), #Conv1d expects input shape (B,C,L)
+        self.time_mlp = nn.Sequential(
+            nn.Linear(time_dim, hidden_dim),
             nn.SiLU(),
-            nn.Conv1d(conv_channels, hidden, kernel_size=3, padding=1),
-            nn.SiLU(),
+            nn.Linear(hidden_dim, feat_dim),
         )
-        #Output head: -> 3 (predict noise in xyz)
-        #maps hidden features back to 3 numbers: predicted noise in xyz
-        self.out_proj = nn.Sequential(
-            nn.Linear(hidden, hidden),
+
+        # Initial node features: start as zeros, then add timestep embedding
+        self.in_feat = nn.Linear(1, feat_dim)
+
+        self.layers = nn.ModuleList([EGNNLayer(feat_dim, hidden_dim) for _ in range(layers)])
+
+        self.out = nn.Sequential(
+            nn.Linear(feat_dim, hidden_dim),
             nn.SiLU(),
-            nn.Linear(hidden, 3),
+            nn.Linear(hidden_dim, 3),
         )
-    #the method that will be called by pytorch when you do model(x)
+
     def forward(self, x_t, t, mask=None):
-        '''
-        x_t - (B, L, 3) noisy coords
-        t: (B, ) timestep integers 
-        mask: (B, L) bool
-        '''
+        B, L, _ = x_t.shape
 
-        B, L, _ = x_t.shape #unpack shapes
+        # Timestep embedding
+        t_emb = sinusodial_timestep_embedding(t, dim=self.time_dim)  # (B,time_dim)
+        t_feat = self.time_mlp(t_emb).unsqueeze(1)                   # (B,1,F)
 
-        #Creates (B, time_dim) embedding'
-        t_emb = sinusodial_timestep_embedding(t, dim=self.time_dim) 
-        #Produces (B, hidden) learned time feature
-        t_feat = self.time_mlp(t_emb)
-        #xyz -> hidden (B, L, hidden)
-        h = self.in_proj(x_t)
-        # Add timestep conditioning to every residue:
-        # t_feat (B, hidden) -> (B,1,hidden) -> broadcast to (B,L,hidden)
-        h += t_feat.unsqueeze(1)
-        '''
-        t_feat is (B, hidden)
-        .unsquee... makes it (B, 1, hidden)
-        Broadcasting adds that same time vector to all residues:
-        - (B, L, hidden) + (B, 1, hidden) -> (B, L, hidden)
+        # Start node features as zeros (+ time)
+        h = torch.zeros((B, L, t_feat.shape[-1]), device=x_t.device)
+        h = h + t_feat
 
-        why - conditions every residue feature on diffusion timestep
-        '''
-        #conv mixing across residues:
-        #(B, L, hidden) -> (B, hidden, L)
-        #why - conv1d expects channels first (B, C, L)
-        h_conv = h.transpose(1, 2)           # (B, hidden, L)
-        h_conv = self.conv(h_conv)           # (B, hidden, L)
-        # back to (B, L, hidden) for the linear head
-        h = h_conv.transpose(1, 2)
+        x = x_t
+        for layer in self.layers:
+            h, x = layer(h, x, mask=mask)
 
-        # this is the networks predition of the Gaussian noise added at timestep t
-        eps_pred = self.out_proj(h) # Outputs (B, L, 3)
+        eps_pred = self.out(h)
 
-        #Zero out predictions on padding if mask provided (not required but neat)
         if mask is not None:
-            eps_pred = eps_pred * mask.unsqueeze(-1) #(B, L) -> (B, L, 1)
-            #Broadcast multiplication zeros out predictions on padded residues.
-            #neat because you’ll mask loss anyway, but this reduces useless outputs.
-        
+            eps_pred = eps_pred * mask.unsqueeze(-1)
+
         return eps_pred
-    
+
 # Diffusion model wrapper
 class BackboneDiffusionModel(nn.Module):
     '''
@@ -246,7 +293,9 @@ class BackboneDiffusionModel(nn.Module):
     def __init__(self, T=1000, beta_start=1e-4, beta_end=2e-2, time_dim=12, hidden=256):
         super().__init__() #initialise module
         self.schedule = DiffusionSchedule(T=T, beta_start=beta_start, beta_end=beta_end) 
-        self.denoiser = SimpleCADenoiser(time_dim=time_dim, hidden=hidden) 
+        # self.denoiser = SimpleCADenoiser(time_dim=time_dim, hidden=hidden) 
+        self.denoiser = EGNNDenoiser(time_dim=time_dim)
+
     
     def to(self, device):
         super().to(device)
@@ -304,7 +353,7 @@ class BackboneDiffusionModel(nn.Module):
         '''
 
 
-    def training_loss(self, x0, mask, inpaint_mask=None):
+    def training_loss(self, x0, mask, inpaint_mask=None, bond_weight=0.1):
         '''
         Compute diffusion training techniques
         x0: (B, L, 3) clean CA coords (padded)
@@ -337,12 +386,20 @@ class BackboneDiffusionModel(nn.Module):
 
         # Decide where loss is computed
         loss_mask = mask
+
+        # Compute target CA-CA distance from TRUE (normalized) data in this batch
+        true_diffs = x0_centered[:, 1:, :] - x0_centered[:, :-1, :]
+        true_d = torch.sqrt((true_diffs ** 2).sum(dim=-1) + 1e-8)
+        true_valid = loss_mask[:, 1:] & loss_mask[:, :-1]
+        target = true_d[true_valid].mean().detach()
+
         if inpaint_mask is not None:
             # train only on inpaint region, but still within valid residues
             loss_mask = mask & inpaint_mask
             # if inpaint mask accidentally has no True values, fall back to full mask
             if loss_mask.sum() == 0:
                 loss_mask = mask
+
 
         # MSE per point
         mse = (noise - eps_pred) ** 2  # (B, L, 3)
@@ -352,15 +409,26 @@ class BackboneDiffusionModel(nn.Module):
 
         # Average over valid entries
         denom = loss_mask.sum().clamp(min=1).float() * 3.0
-        loss = mse.sum() / denom
+        base_loss = mse.sum() / denom
+        
+        alpha_bar_t = self.schedule.alpha_bar[t].view(-1, 1, 1)  # (B,1,1)
+        x0_pred = (x_t - torch.sqrt(1.0 - alpha_bar_t) * eps_pred) / torch.sqrt(alpha_bar_t)
 
-        return loss
+        # Apply geometry constraint only where we train (inpaint-only if provided)
+        geom_mask = loss_mask
+        bond_loss = self.bond_length_loss(x0_pred, loss_mask, target=target)
+        # clash = self.clash_loss_topk(x0_pred, loss_mask, min_dist=0.7, topk=512)
+        clash_xt = self.clash_loss_topk(x_t, loss_mask, min_dist=0.7, topk=512)
+        # loss = base_loss + bond_weight * bond_loss + 15.0 * clash + 3.0 * clash_xt
+        clash = self.clash_loss_barrier_topk(x0_pred, loss_mask, min_dist=0.7, topk=512)
+        loss = base_loss + bond_weight * bond_loss + 10.0 * clash
+
+        return loss, base_loss.detach(), bond_loss.detach(), clash.detach()
+
     
     #p_sample reverse step
-    @torch.no_grad() #modifier tells Pytorch do not track gradients in this function
     #this means, no backround graphing, less memory so faster
     #here because sampling is used at inference time, not training and you dont neeed gradients to generate a protein
-    def p_sample(self, x_t, t, mask=None):
         '''
         One reverse diffusion step: sample x_{t-1} from x_t
 
@@ -387,63 +455,30 @@ class BackboneDiffusionModel(nn.Module):
             posterior variance (a function of betas/alphas/alpha_bar). Your choice is a baseline and works, 
             just not the only option.
         '''
-
+    @torch.no_grad()
+    def p_sample(self, x_t, t, mask=None):
         device = x_t.device
-        B = x_t.shape[0] # B = batch size, which is the first dimension in the embedding x_t
+        B = x_t.shape[0]
 
-        #They are 1D arrays storing the schedule across time, shape (T,)
         betas = self.schedule.betas
         alphas = self.schedule.alphas
         alpha_bar = self.schedule.alpha_bar
 
-        #
         beta_t = betas[t].view(B, 1, 1)
         alpha_t = alphas[t].view(B, 1, 1)
         alpha_bar_t = alpha_bar[t].view(B, 1, 1)
 
-        '''
-        betas[t]
-            t is a tensor of indices shape (B,).
-            Indexing a (T,) tensor with (B,) gives (B,):
-            beta_t[b] = betas[t[b]]
+        eps_pred = self.denoiser(x_t, t, mask=mask)
 
-        So you get a per-protein scalar value.
-            .view(B, 1, 1)
-            reshapes (B,) into (B,1,1)
-
-        Why:
-            You want to multiply it with x_t which is (B, L, 3).
-            (B,1,1) broadcasts across L and xyz cleanly:
-                each protein gets its own scalar, applied to all residues and coords.
-                Same logic for alpha_t and alpha_bar_t.
-        '''
-        #Predict noise ε_theta(x_t, t)
-        #output is the same shape as x_t, it predicts Gaussian noise comp. produced in x_t
-        # needed so we Then reverse sampling uses that prediction to “subtract noise”.
-        eps_pred = self.denoiser(x_t, t, mask=mask) #(B,L,3)
-
-        #DDPM mean
-        mean = (1.0/ torch.sqrt(alpha_t)) * (x_t - (beta_t / torch.sqrt(1.0 - alpha_bar_t)) * eps_pred)
-
-        #Noise for stochasticity (except at t=0)
-        # if all batch items are at timestep 0, you stop and return the mean.
-        # This avoids adding extra noise at the final step.
-        # At t=0, the distribution should be the final sample 
-        # You don’t want stochasticity after finishing.
-        if (t == 0).all():
-            return mean
-
-        #Standard choice: sigma_t = sqrt(beta_t)
-        # add stochasticity for sampling
-        # Diffusion sampling is stochastic; this helps produce diverse samples.
-        # If you remove this term, you get a deterministic sampler (like DDIM-ish behavior), but that’s a different method.
-        noise = torch.randn_like(x_t)
-        x_prev = mean + torch.sqrt(beta_t) * noise
+        mean = (1.0 / torch.sqrt(alpha_t)) * (
+            x_t - (beta_t / torch.sqrt(1.0 - alpha_bar_t)) * eps_pred
+        )
 
         if mask is not None:
-            x_prev = x_prev * mask.unsqueeze(-1)
+            mean = mean * mask.unsqueeze(-1)
 
-        return x_prev
+        return mean
+
     
     #full sampling loop
     #here we input B, L
@@ -519,6 +554,7 @@ class BackboneDiffusionModel(nn.Module):
             #inputs (x_t - current noisy coords). t timestep tensor, mask for padding
             #output - updated coords, x_t becomes slightlt less noisy and more protein-like structure
             x_t = self.p_sample(x_t, t, mask=mask)
+            x_t = self.repel_clashes(x_t, mask, min_dist=0.9, strength=0.08, iters=3)
 
         #Center the final output
         #center_coords subtracts the masked mean coordinate.
@@ -605,7 +641,7 @@ class BackboneDiffusionModel(nn.Module):
 
         #keepdim keeps the summed dimension instead of collapsing it, need for broadcasting later
         #clamp ensures denominator is at least 1
-        denom = m.sum(dim=1, keepdim=True).clam(min=1.0)
+        denom = m.sum(dim=1, keepdim=True).clamp(min=1.0)
 
         # RMS distance from origin (after centering)
         rms = torch.sqrt(((x**2) * m).sum(dim=(1,2), keepdim=True) / (denom * 3.0) + eps)
@@ -614,19 +650,129 @@ class BackboneDiffusionModel(nn.Module):
         return x_norm, rms
     
 
-    def bond_length_loss(self, x, mask, eps=1e-8):
-        '''
-        Penalise bad CA-CA distances. x is (B,L,3) in normalized scale.
-        '''
+    def bond_length_loss(self, x, mask, target, eps=1e-8):
+        """
+        Penalize CA-CA distances deviating from a provided target (scalar).
+        """
         diffs = x[:, 1:, :] - x[:, :-1, :]
-        d = torch.sqrt((diffs**2).sum(dim=-1) + eps) #(B,L-1)
+        d = torch.sqrt((diffs ** 2).sum(dim=-1) + eps)  # (B, L-1)
 
-        valid = mask[:, 1:] & mask[:,:-1]
+        valid = mask[:, 1:] & mask[:, :-1]
         d_valid = d[valid]
 
         if d_valid.numel() < 1:
             return torch.tensor(0.0, device=x.device)
-        
-        #Target = current batch mean (keeps unit consistent)
-        target = d_valid.mean().detach()
+
         return ((d_valid - target) ** 2).mean()
+
+        """
+        Penalize non-neighbor residues that are too close.
+
+        Args:
+            x: (B, L, 3) predicted coords (normalized units)
+            mask: (B, L) bool
+            min_dist: minimum allowed distance between non-neighbors
+
+        Returns:
+            scalar tensor
+        """
+    def clash_loss_topk(self, x, mask, min_dist=0.9, topk=256, eps=1e-8):
+        """
+        Clash penalty focusing on the worst (closest) non-neighbor pairs.
+        """
+        B, L, _ = x.shape
+
+        diff = x[:, :, None, :] - x[:, None, :, :]
+        dist = torch.sqrt((diff ** 2).sum(dim=-1) + eps)  # (B,L,L)
+
+        valid = mask[:, :, None] & mask[:, None, :]
+        idx = torch.arange(L, device=x.device)
+        sep = (idx[None, :] - idx[:, None]).abs()
+        valid = valid & (sep > 2).unsqueeze(0)
+
+        # upper triangle only
+        triu = torch.triu(torch.ones((L, L), device=x.device, dtype=torch.bool), diagonal=1)
+        valid = valid & triu.unsqueeze(0)
+
+        # collect valid distances into a vector
+        d = dist[valid]  # (N,)
+
+        if d.numel() < 1:
+            return torch.tensor(0.0, device=x.device)
+
+        # take the closest topk pairs
+        k = min(topk, d.numel())
+        smallest = torch.topk(d, k, largest=False).values  # k smallest distances
+
+        # penalize those below min_dist
+        too_close = (min_dist - smallest).clamp(min=0.0)
+        return (too_close ** 2).mean()
+    @torch.no_grad()
+    def repel_clashes(self, x, mask, min_dist=0.9, strength=0.08, iters=3, eps=1e-8):
+        """
+        Push non-neighbor residues apart if they are closer than min_dist.
+        Runs a few cheap repulsion iterations.
+        """
+        B, L, _ = x.shape
+        idx = torch.arange(L, device=x.device)
+        sep = (idx[None, :] - idx[:, None]).abs()  # (L, L)
+        non_neighbor = sep > 2
+
+        for _ in range(iters):
+            diff = x[:, :, None, :] - x[:, None, :, :]              # (B,L,L,3)
+            dist = torch.sqrt((diff ** 2).sum(dim=-1) + eps)        # (B,L,L)
+
+            valid = mask[:, :, None] & mask[:, None, :]             # (B,L,L)
+            valid = valid & non_neighbor.unsqueeze(0)               # ignore neighbors
+
+            # amount to push = (min_dist - dist) if dist < min_dist
+            push = (min_dist - dist).clamp(min=0.0)                 # (B,L,L)
+            push = push * valid.float()
+
+            # direction to push along
+            dir = diff / (dist.unsqueeze(-1) + eps)                 # (B,L,L,3)
+
+            # accumulate forces on each i (sum over j)
+            force = (push.unsqueeze(-1) * dir).sum(dim=2)           # (B,L,3)
+
+            x = x + strength * force
+
+            if mask is not None:
+                x = x * mask.unsqueeze(-1)
+
+        return x
+    
+    def clash_loss_barrier_topk(self, x, mask, min_dist=0.7, topk=512, eps=1e-8):
+        """
+        Barrier-style clash loss on closest pairs.
+        Strongly penalizes very small distances (better than hinge).
+        """
+        B, L, _ = x.shape
+
+        diff = x[:, :, None, :] - x[:, None, :, :]
+        dist = torch.sqrt((diff ** 2).sum(dim=-1) + eps)  # (B,L,L)
+
+        valid = mask[:, :, None] & mask[:, None, :]
+        idx = torch.arange(L, device=x.device)
+        sep = (idx[None, :] - idx[:, None]).abs()
+        valid = valid & (sep > 2).unsqueeze(0)
+
+        triu = torch.triu(torch.ones((L, L), device=x.device, dtype=torch.bool), diagonal=1)
+        valid = valid & triu.unsqueeze(0)
+
+        d = dist[valid]
+        if d.numel() < 1:
+            return torch.tensor(0.0, device=x.device)
+
+        k = min(topk, d.numel())
+        smallest = torch.topk(d, k, largest=False).values  # k closest distances
+
+        # barrier: penalize if below min_dist, with huge gradients near 0
+        # term ~ (min_dist / d - 1)^2 for d < min_dist
+        ratio = (min_dist / (smallest + eps))
+        penalty = (ratio - 1.0).clamp(min=0.0) ** 2
+        return penalty.mean()
+
+
+
+

@@ -46,6 +46,18 @@ def main():
     print("CA-CA distance min/max:", d.min().item(), d.max().item())
     print("Any NaNs in coords:", torch.isnan(ca).any().item())
 
+    x = ca[0]  # (L,3)
+    diff = x[:, None, :] - x[None, :, :]
+    dist = (diff**2).sum(dim=-1).sqrt()
+
+    L = x.shape[0]
+    idx = torch.arange(L)
+    sep = (idx[None,:] - idx[:,None]).abs()
+    dist = dist[sep > 2]  # non-neighbors only
+
+    print("Min non-neighbor distance:", dist.min().item())
+
+
 
 if __name__ == "__main__":
     main()
