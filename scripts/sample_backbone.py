@@ -2,6 +2,7 @@ import os
 import torch
 import sys
 from pathlib import Path
+import json
 
 THIS_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = THIS_DIR.parent
@@ -11,6 +12,8 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from models.diffusion_backbone import BackboneDiffusionModel
 from utils.pdb_io import write_ca_pdb
+from eval.metrics import compute_backbone_metrics
+
 
 
 def main():
@@ -40,6 +43,17 @@ def main():
 
     print("CA min/max:", ca.min().item(), ca.max().item())
     print("CA mean norm:", ca.norm(dim=-1).mean().item())
+
+    #Build a mask (all residues are valid here)
+    mask = torch.ones((1,L), dtype=torch.bool, device=device)
+    metrics = compute_backbone_metrics(ca, mask)
+    print("Sample metrics:", metrics)
+
+    metrics_path = os.path.join(out_dir, f"sample_L{L}_metrics.json")
+    with open(metrics_path, "w") as f:
+        json.dump(metrics, f, indent=2)
+    
+    print(f"Saved metrics to: {metrics_path}")
 
     d = (ca[:, 1:, :] - ca[:, :-1, :]).norm(dim=-1)  # (B, L-1)
     print("CA-CA distance mean:", d.mean().item())
