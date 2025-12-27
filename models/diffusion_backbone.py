@@ -448,12 +448,14 @@ class BackboneDiffusionModel(nn.Module):
             topk=4096,
         ):
         """
+        Clean Week 2 Day 1 training loss.
+
         Args:
-            x0: (B, L, 3) padded CA coords
+            x0: (B, L, 3) padded CA coords (raw dataset space)
             mask: (B, L) bool valid residues
             inpaint_mask: (B, L) bool (optional) region to train on
         Returns:
-            loss, base_loss, bond_loss, clash_loss_total
+            loss, base_loss, bond_loss, clash_sum_for_logging
         """
         device = x0.device
         B, L, _ = x0.shape
@@ -472,6 +474,13 @@ class BackboneDiffusionModel(nn.Module):
         # 4) predict noise
         eps_pred = self.denoiser(x_t, t, mask=mask)
 
+        #adding support for two
+        # alpha_bar_t = self.schedule.alpha_bar[t].view(-1, 1, 1)  # (B,1,1)
+
+        # Estimate x0 from x_t and predicted eps
+        # x0_pred = (x_t - torch.sqrt(1.0 - alpha_bar_t) * eps_pred) / torch.sqrt(alpha_bar_t + 1e-8)
+        # x0_pred = self.center_coords(x0_pred, mask)
+
         # 5) loss mask (inpaint-aware)
         loss_mask = mask
         if inpaint_mask is not None:
@@ -489,6 +498,10 @@ class BackboneDiffusionModel(nn.Module):
         alpha_bar_t = self.schedule.alpha_bar[t].view(-1, 1, 1)  # (B,1,1)
         x0_pred = (x_t - torch.sqrt(1.0 - alpha_bar_t) * eps_pred) / torch.sqrt(alpha_bar_t)
 
+        # Important: keep x0_pred in the same coordinate convention as x_true
+        x0_pred = self.center_coords(x0_pred, mask)
+        x0_pred, _ = self.normalize_scale(x0_pred, mask)
+
         # 8) anchored bond target from TRUE x0_centered
         bond_loss = self.bond_loss_anchored(x0_pred, x0_centered, loss_mask)
 
@@ -496,10 +509,10 @@ class BackboneDiffusionModel(nn.Module):
         clash_x0 = self.clash_loss_barrier_topk(x0_pred, loss_mask, min_dist=min_dist, topk=topk)
         clash_xt = self.clash_loss_barrier_topk(x_t, loss_mask, min_dist=min_dist, topk=topk)
 
-        clash_total = clash_weight * clash_x0 + clash_xt_weight * clash_xt
+        # clash_total = clash_weight * clash_x0 + clash_xt_weight * clash_xt
 
         # 10) total
-        loss = base_loss + bond_weight * bond_loss + clash_total
+        loss = base_loss + bond_weight * bond_loss + clash_weight * clash_x0 + clash_xt_weight * clash_xt
 
         return loss, base_loss.detach(), bond_loss.detach(), (clash_x0.detach() + clash_xt.detach())
 
