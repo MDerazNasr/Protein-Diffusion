@@ -13,9 +13,19 @@ Note - CA is alpha carbon
 '''
 
 import os
+import sys
+from pathlib import Path
 import numpy as np
 import torch
+import random
 from torch.utils.data import Dataset, DataLoader
+
+# Add project root to path if running directly or importing
+_THIS_FILE = Path(__file__).resolve()
+_PROJECT_ROOT = _THIS_FILE.parent.parent
+if str(_PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(_PROJECT_ROOT))
+
 from utils.geometry import (
     pair_wise_distances, 
     backbone_vectors,
@@ -23,6 +33,15 @@ from utils.geometry import (
     angle_sin_cos,
     make_inpaint_mask,
 )
+
+def random_crop(coords, min_len=30, max_len=90):
+    L = coords.shape[0]
+    if L <= min_len:
+        return coords
+
+    crop_len = random.randint(min_len, min(max_len, L))
+    start = random.randint(0, L - crop_len)
+    return coords[start:start+crop_len]
 
 class ProteinBackboneDataset(Dataset):
     '''
@@ -33,9 +52,11 @@ class ProteinBackboneDataset(Dataset):
     - 3 backbone atoms (N, CA, C)
     - 3D coordinates
     '''
-    def __init__(self, folder_path):
+    def __init__(self, folder_path, training=True):
         self.folder_path = folder_path #directory with all processed proteins
         self.files = [] #list of file names ["1CRN.npy", ...]
+        self.training = training
+
         for f in os.listdir(folder_path):
             if f.endswith(".npy"):
                 self.files.append(f)
@@ -52,6 +73,8 @@ class ProteinBackboneDataset(Dataset):
         
         coords = np.load(path) #shape (L, 3, 3)
         
+        if self.training:
+            coords = random_crop(coords, min_len=30, max_len=90)
         #Convert to torch Tensor
         coords = torch.tensor(coords, dtype=torch.float32)
         L = coords.shape[0] #protein length
@@ -135,6 +158,32 @@ class ProteinBackboneDataset(Dataset):
 #         "names": names,
 #     }
 
+def random_shift_in_pad(x, mask):
+    '''
+    Randomly shift a protein inside the padded window.
+    x: (Lmax, 3)
+    mask: (Lmax,)
+    '''
+
+    Lmax = x.shape[0]
+    true_len = int(mask.sum().item())
+
+    if true_len == 0 or true_len == Lmax:
+        return x,mask
+    
+    max_shift = Lmax - true_len
+    shift = random.randint(0, max_shift)
+
+    x_new = torch.zeros_like(x)
+    m_new = torch.zeros_like(mask)
+
+    # Extract real coordinates where mask is True
+    real_coords = x[mask.bool()]
+    x_new[shift:shift + true_len] = real_coords
+    m_new[shift:shift + true_len] = True
+
+    return x_new, m_new
+
 #with dihedrals
 def protein_collate_fn(batch):
     """
@@ -157,6 +206,10 @@ def protein_collate_fn(batch):
         coords = item["coords"]  # (L, 3, 3)
         coords_padded[i, :L, :, :] = coords
         mask[i, :L] = True
+        coords_padded[i], mask[i] = random_shift_in_pad(
+            coords_padded[i],
+            mask[i]
+        )
 
     lengths = torch.tensor(lengths_list, dtype=torch.long)
 
@@ -178,6 +231,13 @@ def protein_collate_fn(batch):
     # visible residues = real residues AND not inpainted
     visible_mask = mask & (~inpaint_mask)            # (B, Lmax)
 
+    if random.random() < 0.01:
+        starts = []
+        for i in range(mask.shape[0]):
+            idxs = mask[i].nonzero(as_tuple=False).squeeze(-1)
+            starts.append(int(idxs[0].item()))        
+        print("Batch true lengths:", lengths[:10], "min/max:", min(lengths), max(lengths))
+
     return {
         "coords": coords_padded,            # (B, Lmax, 3, 3)
         "ca_coords": ca_coords,             # (B, Lmax, 3)
@@ -192,12 +252,6 @@ def protein_collate_fn(batch):
         "lengths": lengths,                 # (B,)
         "names": names,                     # list[str]
     }
-
-
-
-
-
-
 
 def create_dataloader(folder_path, batch_size=4, shuffle=True, num_workers=0):
     '''

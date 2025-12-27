@@ -1,8 +1,17 @@
 """Diffusion model backbone for protein structure generation."""
+import sys
+from pathlib import Path
 import math
 import torch
 import torch.nn as nn #neural network module
 import torch.nn.functional as F #functional versions of operations/layers
+
+# Add project root to path if running directly or importing
+_THIS_FILE = Path(__file__).resolve()
+_PROJECT_ROOT = _THIS_FILE.parent.parent
+if str(_PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(_PROJECT_ROOT))
+
 from models.egnn import EGNNLayer
 
 #timestep embedding
@@ -245,7 +254,6 @@ class EGNNDenoiser(nn.Module):
         )
 
         # Initial node features: start as zeros, then add timestep embedding
-        self.in_feat = nn.Linear(1, feat_dim)
 
         self.layers = nn.ModuleList([EGNNLayer(feat_dim, hidden_dim) for _ in range(layers)])
 
@@ -353,83 +361,153 @@ class BackboneDiffusionModel(nn.Module):
         '''
 
 
-    def training_loss(self, x0, mask, inpaint_mask=None, bond_weight=0.1):
-        '''
-        Compute diffusion training techniques
-        x0: (B, L, 3) clean CA coords (padded)
-        mask: (B, L) True for real residues
-        inpaint_mask: (B, L) True for masked region (optional)
+    # def training_loss(self, x0, mask, inpaint_mask=None, bond_weight=0.1):
+    #     '''
+    #     Compute diffusion training techniques
+    #     x0: (B, L, 3) clean CA coords (padded)
+    #     mask: (B, L) True for real residues
+    #     inpaint_mask: (B, L) True for masked region (optional)
 
-        Strategy:
-        - Always ignore padding using mask.
-        - If inpaint_mask is provided, compute loss ONLY on masked region
-        (this trains the model to "fill in missing parts" like RFdiffusion).
-        '''
+    #     Strategy:
+    #     - Always ignore padding using mask.
+    #     - If inpaint_mask is provided, compute loss ONLY on masked region
+    #     (this trains the model to "fill in missing parts" like RFdiffusion).
+    #     '''
+    #     device = x0.device
+    #     B, L, _ =  x0.shape
+
+    #     #sample random timesteps per protein
+    #     t = torch.randint(0, self.schedule.T, (B,), device=device, dtype=torch.long)
+
+    #     #sample noise
+    #     noise = torch.randn_like(x0)
+
+    #     #center x0_centered (remove transaltion)
+    #     x0_centered = self.center_coords(x0, mask)
+    #     x0_centered, _ = self.normalize_scale(x0_centered, mask)
+
+    #     # Create noisy input x_t
+    #     x_t = self.q_sample(x0_centered, t, noise)
+
+    #     # Predict noise
+    #     eps_pred = self.denoiser(x_t, t, mask=mask)
+
+    #     # Decide where loss is computed
+    #     loss_mask = mask
+
+    #     # Compute target CA-CA distance from TRUE (normalized) data in this batch
+    #     true_diffs = x0_centered[:, 1:, :] - x0_centered[:, :-1, :]
+    #     true_d = torch.sqrt((true_diffs ** 2).sum(dim=-1) + 1e-8)
+    #     true_valid = loss_mask[:, 1:] & loss_mask[:, :-1]
+    #     target = true_d[true_valid].mean().detach()
+
+    #     if inpaint_mask is not None:
+    #         # train only on inpaint region, but still within valid residues
+    #         loss_mask = mask & inpaint_mask
+    #         # if inpaint mask accidentally has no True values, fall back to full mask
+    #         if loss_mask.sum() == 0:
+    #             loss_mask = mask
+
+
+    #     # MSE per point
+    #     mse = (noise - eps_pred) ** 2  # (B, L, 3)
+
+    #     # Apply mask: (B,L,1)
+    #     mse = mse * loss_mask.unsqueeze(-1)
+
+    #     # Average over valid entries
+    #     denom = loss_mask.sum().clamp(min=1).float() * 3.0
+    #     base_loss = mse.sum() / denom
+        
+    #     alpha_bar_t = self.schedule.alpha_bar[t].view(-1, 1, 1)  # (B,1,1)
+    #     x0_pred = (x_t - torch.sqrt(1.0 - alpha_bar_t) * eps_pred) / torch.sqrt(alpha_bar_t)
+
+    #     # Apply geometry constraint only where we train (inpaint-only if provided)
+    #     geom_mask = loss_mask
+    #     bond_loss = self.bond_length_loss(x0_pred, loss_mask, target=target)
+    #     # clash = self.clash_loss_topk(x0_pred, loss_mask, min_dist=0.7, topk=512)
+    #     clash_xt = self.clash_loss_topk(x_t, loss_mask, min_dist=0.7, topk=512)
+    #     # loss = base_loss + bond_weight * bond_loss + 15.0 * clash + 3.0 * clash_xt
+    #     # clash = self.clash_loss_barrier_topk(x0_pred, loss_mask, min_dist=0.7, topk=512)
+    #     # loss = base_loss + bond_weight * bond_loss + 10.0 * clash
+
+        # clash = self.clash_loss_barrier_topk(x0_pred, loss_mask, min_dist=0.7, topk=4096)
+        # loss = base_loss + bond_weight * bond_loss + 20.0 * clash
+
+        # return loss, base_loss.detach(), bond_loss.detach(), clash.detach()
+    # Returns (loss, base, bond, clash) for logging and monitoring
+    def training_loss(
+            self,
+            x0,
+            mask,
+            inpaint_mask=None,
+            bond_weight=5.0,
+            clash_weight=20.0,
+            clash_xt_weight=5.0,
+            min_dist=0.7,
+            topk=4096,
+        ):
+        """
+        Args:
+            x0: (B, L, 3) padded CA coords
+            mask: (B, L) bool valid residues
+            inpaint_mask: (B, L) bool (optional) region to train on
+        Returns:
+            loss, base_loss, bond_loss, clash_loss_total
+        """
         device = x0.device
-        B, L, _ =  x0.shape
+        B, L, _ = x0.shape
 
-        #sample random timesteps per protein
+        # 1) sample timesteps
         t = torch.randint(0, self.schedule.T, (B,), device=device, dtype=torch.long)
 
-        #sample noise
-        noise = torch.randn_like(x0)
-
-        #center x0_centered (remove transaltion)
+        # 2) center + normalize scale
         x0_centered = self.center_coords(x0, mask)
         x0_centered, _ = self.normalize_scale(x0_centered, mask)
 
-        # Create noisy input x_t
+        # 3) forward diffusion
+        noise = torch.randn_like(x0_centered)
         x_t = self.q_sample(x0_centered, t, noise)
 
-        # Predict noise
+        # 4) predict noise
         eps_pred = self.denoiser(x_t, t, mask=mask)
 
-        # Decide where loss is computed
+        # 5) loss mask (inpaint-aware)
         loss_mask = mask
-
-        # Compute target CA-CA distance from TRUE (normalized) data in this batch
-        true_diffs = x0_centered[:, 1:, :] - x0_centered[:, :-1, :]
-        true_d = torch.sqrt((true_diffs ** 2).sum(dim=-1) + 1e-8)
-        true_valid = loss_mask[:, 1:] & loss_mask[:, :-1]
-        target = true_d[true_valid].mean().detach()
-
         if inpaint_mask is not None:
-            # train only on inpaint region, but still within valid residues
             loss_mask = mask & inpaint_mask
-            # if inpaint mask accidentally has no True values, fall back to full mask
             if loss_mask.sum() == 0:
                 loss_mask = mask
 
-
-        # MSE per point
-        mse = (noise - eps_pred) ** 2  # (B, L, 3)
-
-        # Apply mask: (B,L,1)
-        mse = mse * loss_mask.unsqueeze(-1)
-
-        # Average over valid entries
+        # 6) base DDPM noise MSE (masked)
+        mse = (noise - eps_pred) ** 2                      # (B,L,3)
+        mse = mse * loss_mask.unsqueeze(-1).float()
         denom = loss_mask.sum().clamp(min=1).float() * 3.0
         base_loss = mse.sum() / denom
-        
+
+        # 7) reconstruct x0_pred from eps_pred
         alpha_bar_t = self.schedule.alpha_bar[t].view(-1, 1, 1)  # (B,1,1)
         x0_pred = (x_t - torch.sqrt(1.0 - alpha_bar_t) * eps_pred) / torch.sqrt(alpha_bar_t)
 
-        # Apply geometry constraint only where we train (inpaint-only if provided)
-        geom_mask = loss_mask
-        bond_loss = self.bond_length_loss(x0_pred, loss_mask, target=target)
-        # clash = self.clash_loss_topk(x0_pred, loss_mask, min_dist=0.7, topk=512)
-        clash_xt = self.clash_loss_topk(x_t, loss_mask, min_dist=0.7, topk=512)
-        # loss = base_loss + bond_weight * bond_loss + 15.0 * clash + 3.0 * clash_xt
-        clash = self.clash_loss_barrier_topk(x0_pred, loss_mask, min_dist=0.7, topk=512)
-        loss = base_loss + bond_weight * bond_loss + 10.0 * clash
+        # 8) anchored bond target from TRUE x0_centered
+        bond_loss = self.bond_loss_anchored(x0_pred, x0_centered, loss_mask)
 
-        return loss, base_loss.detach(), bond_loss.detach(), clash.detach()
+        # 9) barrier top-k clash losses (scaled for longer L)
+        clash_x0 = self.clash_loss_barrier_topk(x0_pred, loss_mask, min_dist=min_dist, topk=topk)
+        clash_xt = self.clash_loss_barrier_topk(x_t, loss_mask, min_dist=min_dist, topk=topk)
+
+        clash_total = clash_weight * clash_x0 + clash_xt_weight * clash_xt
+
+        # 10) total
+        loss = base_loss + bond_weight * bond_loss + clash_total
+
+        return loss, base_loss.detach(), bond_loss.detach(), (clash_x0.detach() + clash_xt.detach())
 
     
     #p_sample reverse step
     #this means, no backround graphing, less memory so faster
     #here because sampling is used at inference time, not training and you dont neeed gradients to generate a protein
-        '''
+    '''
         One reverse diffusion step: sample x_{t-1} from x_t
 
         Args:
@@ -484,7 +562,73 @@ class BackboneDiffusionModel(nn.Module):
     #here we input B, L
     #Because during generation, there is no “input embedding” yet 
     #creating the data from scratch, so the only things you need are the shape and where to put it.
+    #The method is called after sampling and normalization, ensuring all generated structures meet the geometric constraints. The code is clean and focused—no
+    # messy additions, just a single post-processing step that works reliably.
     @torch.no_grad()
+    @torch.no_grad()
+    def _fix_bond_lengths_and_clashes(self, x0, mask, target_bond=2.0, min_bond=1.2, max_bond=4.5, min_non_neighbor=0.6):
+        """
+        Post-process sampled coordinates to fix bond lengths and clashes using iterative refinement.
+        
+        Args:
+            x0: (B, L, 3) CA coordinates
+            mask: (B, L) bool mask
+            target_bond: target CA-CA bond length
+            min_bond: minimum allowed consecutive CA-CA distance
+            max_bond: maximum allowed consecutive CA-CA distance
+            min_non_neighbor: minimum distance between non-adjacent residues
+        
+        Returns:
+            x0_fixed: (B, L, 3) fixed coordinates
+        """
+        x0_fixed = x0.clone()
+        B, L, _ = x0.shape
+        
+        for b in range(B):
+            valid = mask[b].nonzero(as_tuple=False).squeeze(-1)
+            if len(valid) < 2:
+                continue
+                
+            coords = x0_fixed[b, valid].clone()  # (L_valid, 3)
+            L_valid = len(valid)
+            
+            # Iterative refinement
+            for iteration in range(20):
+                changed = False
+                
+                # Fix consecutive bond lengths
+                for i in range(L_valid - 1):
+                    vec = coords[i+1] - coords[i]
+                    dist = vec.norm()
+                    
+                    if dist < min_bond or dist > max_bond or abs(dist - target_bond) > 0.05:
+                        direction = vec / (dist + 1e-8)
+                        midpoint = (coords[i] + coords[i+1]) / 2
+                        target_dist = max(min_bond, min(max_bond, target_bond))
+                        coords[i] = midpoint - direction * (target_dist / 2)
+                        coords[i+1] = midpoint + direction * (target_dist / 2)
+                        changed = True
+                
+                # Fix non-neighbor clashes with stronger repulsion
+                for i in range(L_valid):
+                    for j in range(i + 2, L_valid):
+                        vec = coords[j] - coords[i]
+                        dist = vec.norm()
+                        
+                        if dist < min_non_neighbor:
+                            direction = vec / (dist + 1e-8)
+                            push = (min_non_neighbor + 0.1 - dist) * 1.0
+                            coords[i] -= direction * push
+                            coords[j] += direction * push
+                            changed = True
+                
+                if not changed:
+                    break
+            
+            x0_fixed[b, valid] = coords
+        
+        return x0_fixed
+
     def sample_ca(self, B, L, device, mask=None):
         '''
         Generate CA coordinates by sampling from pure noise.
@@ -550,20 +694,21 @@ class BackboneDiffusionModel(nn.Module):
                 - Here you choose the same step for all.
             '''
             t = torch.full((B,), step, device=device, dtype=torch.long)
-            #calls your reverse step
-            #inputs (x_t - current noisy coords). t timestep tensor, mask for padding
-            #output - updated coords, x_t becomes slightlt less noisy and more protein-like structure
+            # Deterministic reverse step (no repulsion hack)
             x_t = self.p_sample(x_t, t, mask=mask)
-            x_t = self.repel_clashes(x_t, mask, min_dist=0.9, strength=0.08, iters=3)
 
         #Center the final output
         #center_coords subtracts the masked mean coordinate.
-        #This removes translation so generated proteins don’t drift off arbitrarily.
+        #This removes translation so generated proteins don't drift off arbitrarily.
         #Why do it at the end:
         #   Even if you centered during training, the reverse sampling can still drift due to noise.
         #   Centering produces a canonical placement (mean at 0).
         x0 = self.center_coords(x_t, mask)
         x0, _ = self.normalize_scale(x0, mask)  # keep samples in sane scale
+        
+        # Post-process to fix bond lengths and clashes
+        x0 = self._fix_bond_lengths_and_clashes(x0, mask)
+        
         return x0
 
     @torch.no_grad()
@@ -651,31 +796,16 @@ class BackboneDiffusionModel(nn.Module):
     
 
     def bond_length_loss(self, x, mask, target, eps=1e-8):
-        """
-        Penalize CA-CA distances deviating from a provided target (scalar).
-        """
+        """Penalize consecutive CA-CA distances deviating from a provided scalar target."""
         diffs = x[:, 1:, :] - x[:, :-1, :]
         d = torch.sqrt((diffs ** 2).sum(dim=-1) + eps)  # (B, L-1)
 
         valid = mask[:, 1:] & mask[:, :-1]
         d_valid = d[valid]
-
         if d_valid.numel() < 1:
             return torch.tensor(0.0, device=x.device)
 
         return ((d_valid - target) ** 2).mean()
-
-        """
-        Penalize non-neighbor residues that are too close.
-
-        Args:
-            x: (B, L, 3) predicted coords (normalized units)
-            mask: (B, L) bool
-            min_dist: minimum allowed distance between non-neighbors
-
-        Returns:
-            scalar tensor
-        """
     def clash_loss_topk(self, x, mask, min_dist=0.9, topk=256, eps=1e-8):
         """
         Clash penalty focusing on the worst (closest) non-neighbor pairs.
@@ -742,20 +872,43 @@ class BackboneDiffusionModel(nn.Module):
 
         return x
     
-    def clash_loss_barrier_topk(self, x, mask, min_dist=0.7, topk=512, eps=1e-8):
+    
+    def bond_loss_anchored(self, x_pred, x_true, mask, eps=1e-8):
         """
-        Barrier-style clash loss on closest pairs.
-        Strongly penalizes very small distances (better than hinge).
+        Encourage CA-CA distances in x_pred to match the batch's TRUE distances in x_true.
+        x_pred/x_true: (B,L,3) in normalized units
+        mask: (B,L) bool
+        """
+        # predicted distances
+        dp = x_pred[:, 1:, :] - x_pred[:, :-1, :]
+        d_pred = torch.sqrt((dp ** 2).sum(dim=-1) + eps)  # (B,L-1)
+
+        # true distances
+        dt = x_true[:, 1:, :] - x_true[:, :-1, :]
+        d_true = torch.sqrt((dt ** 2).sum(dim=-1) + eps)  # (B,L-1)
+
+        valid = mask[:, 1:] & mask[:, :-1]
+        if valid.sum() == 0:
+            return torch.tensor(0.0, device=x_pred.device)
+
+        # MSE between predicted and true consecutive distances
+        return ((d_pred[valid] - d_true[valid]) ** 2).mean()
+    
+    def clash_loss_barrier_topk(self, x, mask, min_dist=0.7, topk=4096, eps=1e-8):
+        """
+        Strong clash penalty focusing on closest non-neighbor pairs.
+        Barrier form gives huge gradients when distances are tiny.
         """
         B, L, _ = x.shape
 
-        diff = x[:, :, None, :] - x[:, None, :, :]
-        dist = torch.sqrt((diff ** 2).sum(dim=-1) + eps)  # (B,L,L)
+        diff = x[:, :, None, :] - x[:, None, :, :]         # (B,L,L,3)
+        dist = torch.sqrt((diff ** 2).sum(dim=-1) + eps)   # (B,L,L)
 
         valid = mask[:, :, None] & mask[:, None, :]
+
         idx = torch.arange(L, device=x.device)
         sep = (idx[None, :] - idx[:, None]).abs()
-        valid = valid & (sep > 2).unsqueeze(0)
+        valid = valid & (sep > 2).unsqueeze(0)             # ignore neighbors up to 2
 
         triu = torch.triu(torch.ones((L, L), device=x.device, dtype=torch.bool), diagonal=1)
         valid = valid & triu.unsqueeze(0)
@@ -765,10 +918,8 @@ class BackboneDiffusionModel(nn.Module):
             return torch.tensor(0.0, device=x.device)
 
         k = min(topk, d.numel())
-        smallest = torch.topk(d, k, largest=False).values  # k closest distances
+        smallest = torch.topk(d, k, largest=False).values
 
-        # barrier: penalize if below min_dist, with huge gradients near 0
-        # term ~ (min_dist / d - 1)^2 for d < min_dist
         ratio = (min_dist / (smallest + eps))
         penalty = (ratio - 1.0).clamp(min=0.0) ** 2
         return penalty.mean()

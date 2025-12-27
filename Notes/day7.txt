@@ -16,7 +16,6 @@ Denoising Diffusion Probabilistic Model (DDPM) gives a closed form where the mea
 And the reverse step is:
 
 xₜ₋₁ = μₜ + σₜ z, where z ~ N(0, I)
-
 At t=0: no noise is added (just take the mean).
 
 That’s literally it.

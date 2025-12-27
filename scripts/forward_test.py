@@ -26,5 +26,6 @@ if inpaint_mask is not None:
 model = BackboneDiffusionModel(T=100).to(device)
 model.train()
 
-loss = model.training_loss(x0, mask, inpaint_mask=inpaint_mask)
+loss, base_loss, bond_loss, clash_loss = model.training_loss(x0, mask, inpaint_mask=inpaint_mask)
 print("Day 6 sanity loss:", float(loss.item()))
+print(f"  Base: {base_loss.item():.3f}, Bond: {bond_loss.item():.3f}, Clash: {clash_loss.item():.3f}")
