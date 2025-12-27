@@ -923,7 +923,134 @@ class BackboneDiffusionModel(nn.Module):
         ratio = (min_dist / (smallest + eps))
         penalty = (ratio - 1.0).clamp(min=0.0) ** 2
         return penalty.mean()
+    
+    #Helper functions
+    def bond_length_loss(ca_coords, mask, target=3.8):
+        """
+        Bond length loss - teaches the model to keep amino acids the right distance apart!
+        
+        Think of a protein like a necklace of beads. Each bead (amino acid) is connected
+        to the next one by a "bond" - like links in a chain. In real proteins, these bonds
+        have a specific length - not too short (squished!) and not too long (broken!).
+        
+        Biology context:
+        - In real proteins, CA atoms of neighboring amino acids are about 3.8 Angstroms apart
+          (that's the distance between the alpha carbons)
+        - But in our simplified CA-only model, we use ~2.0 Angstroms as the target
+        - If bonds are too short, atoms overlap (physically impossible!)
+        - If bonds are too long, the protein chain is stretched or broken
+        - This loss function "punishes" the model when bonds are the wrong length
+        
+        How it works:
+        1. Measure the distance between each pair of neighboring CA atoms
+        2. Compare each distance to the target (what it SHOULD be)
+        3. Calculate the error: (actual_distance - target_distance)²
+        4. Average all the errors = loss!
+        
+        The bigger the loss, the worse the bonds are. When we train, the model learns
+        to minimize this loss, which means it learns to make bonds the right length!
+        
+        Args:
+            ca_coords: (B, L, 3) CA atom coordinates
+            mask: (B, L) bool - which residues are real (not padding)
+            target: float - the ideal bond length in Angstroms (default 3.8)
+                      Note: For CA-only models, this is usually ~2.0
+        
+        Returns:
+            loss: scalar - average squared error from target bond length
+        """
+        # Step 1: Calculate distances between consecutive CA atoms
+        # This is like measuring the length of each link in a chain
+        diffs = ca_coords[:, 1:, :] - ca_coords[:, :-1, :]  # (B, L-1, 3) - vectors between neighbors
+        d = torch.sqrt((diffs ** 2).sum(dim=-1) + 1e-8)  # (B, L-1) - actual bond lengths
+        
+        # Step 2: Only count real bonds (ignore padding)
+        # If a protein has length 50, we only have 49 bonds (between positions 0-1, 1-2, ..., 48-49)
+        valid = mask[:, 1:] & mask[:, :-1]  # (B, L-1) - True where both residues are real
 
+        # Step 3: Calculate error for each bond
+        # Error = (actual_length - target_length)²
+        # If actual = target, error = 0 (perfect!)
+        # If actual is far from target, error is big (bad!)
+        err = (d - target) ** 2  # (B, L-1) - squared error for each bond
+        err = err * valid  # Zero out errors for fake bonds (padding)
+        
+        # Step 4: Average the errors
+        # Take all the errors, add them up, divide by number of real bonds
+        denom = valid.sum().clamp(min=1).float()  # Total number of real bonds
+        return err.sum() / denom  # Average error = loss!
+    
+    def clash_loss(ca_coords, mask, clash_dist=2.5, ignore_k=3):
+        """
+        Clash loss - teaches the model to keep atoms from crashing into each other!
+        
+        Think of a protein like a crowded room full of people. Some people are supposed
+        to be close (like neighbors holding hands), but other people should stay far apart
+        (like strangers). If strangers get too close, they "clash" - bump into each other!
+        
+        Biology context:
+        - In real proteins, atoms have a minimum safe distance (like personal space)
+        - Neighbors (residues i and i+1) are SUPPOSED to be close (~2 Angstroms)
+        - But non-neighbors should stay far apart (at least 2.5 Angstroms)
+        - If non-neighbors get too close, atoms overlap (physically impossible!)
+        - This loss function "punishes" the model when atoms are too close
+        
+        How it works (hinge loss):
+        - If distance >= clash_dist: penalty = 0 (safe distance, no problem!)
+        - If distance < clash_dist: penalty = clash_dist - distance (too close, bad!)
+        - The closer they are, the bigger the penalty
+        - We only check non-neighbors (ignore pairs that are close in sequence)
+        
+        Example:
+        - clash_dist = 2.5 Angstroms
+        - If two non-neighbors are 3.0 Angstroms apart: penalty = 0 (safe!)
+        - If two non-neighbors are 1.5 Angstroms apart: penalty = 2.5 - 1.5 = 1.0 (bad!)
+        - If two non-neighbors are 0.5 Angstroms apart: penalty = 2.5 - 0.5 = 2.0 (very bad!)
+        
+        Args:
+            ca_coords: (B, L, 3) CA atom coordinates
+            mask: (B, L) bool - which residues are real (not padding)
+            clash_dist: float - minimum safe distance in Angstroms (default 2.5)
+            ignore_k: int - ignore pairs within k positions in sequence (default 3)
+                      Why? Because residues 1,2,3 are naturally close in 3D space
+        
+        Returns:
+            loss: scalar - average penalty for atoms that are too close
+        """
+        B, L, _ = ca_coords.shape
+        
+        # Step 1: Calculate distances between ALL pairs of CA atoms
+        # This creates a big table: dist[i,j] = distance between residue i and residue j
+        diff = ca_coords[:, :, None, :] - ca_coords[:, None, :, :]  # (B, L, L, 3)
+        dist = torch.sqrt((diff ** 2).sum(dim=-1) + 1e-8)  # (B, L, L) - all pairwise distances
 
+        # Step 2: Build masks to identify which pairs we should check
+        pair_mask = mask[:, :, None] & mask[:, None, :]  # (B, L, L) - both residues are real
+
+        # Step 3: Identify non-neighbors (pairs far apart in sequence)
+        # We ignore pairs that are close in sequence (like 1-2, 1-3, 1-4) because
+        # they're naturally close in 3D space even if they're far in sequence
+        idx = torch.arange(L, device=ca_coords.device)
+        sep = (idx[None, :] - idx[:, None]).abs()  # |i - j| for all pairs
+        non_neighbor = sep > ignore_k  # True if residues are far apart in sequence
+        
+        # Step 4: Combine masks - only check pairs that are:
+        #   - Both real residues (pair_mask)
+        #   - Far apart in sequence (non_neighbor)
+        valid = pair_mask & non_neighbor[None, :, :]  # (B, L, L)
+
+        # Step 5: Calculate hinge penalty
+        # penalty = max(0, clash_dist - distance)
+        # This gives 0 if distance >= clash_dist (safe!)
+        # And gives a positive value if distance < clash_dist (too close!)
+        penalty = torch.relu(clash_dist - dist) * valid  # (B, L, L)
+        # relu(x) = max(0, x), so:
+        # - If dist >= clash_dist: clash_dist - dist <= 0, so relu = 0 (no penalty)
+        # - If dist < clash_dist: clash_dist - dist > 0, so relu = that value (penalty!)
+
+        # Step 6: Average the penalties
+        # Only count penalties for valid pairs (real non-neighbors)
+        denom = valid.sum().clamp(min=1).float()  # Total number of valid pairs
+        return penalty.sum() / denom  # Average penalty = loss!
 
 
