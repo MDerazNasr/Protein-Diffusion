@@ -43,7 +43,7 @@ def pairewise_distances(ca_coords, mask):
     dist = dist * pair_mask
     return dist, pair_mask
 
-def clash_metrics(ca_coords, mask, ignore_k=3, clash_dist=0.6):
+def clash_mask(ca_coords, mask, ignore_k=3, clash_dist=0.6):
     """
     Clash score for non-neighbor residues.
     
@@ -102,3 +102,157 @@ def clash_metrics(ca_coords, mask, ignore_k=3, clash_dist=0.6):
     clash_fraction = clash_count / valid_pairs  # (B,)
 
     return clash_fraction, min_non_neighbor_dist
+
+def radius_of_gyration(ca_coords, mask):
+    """
+    Calculate the radius of gyration (Rg) for protein structures.
+    
+    Think of a protein like a ball of yarn. The radius of gyration tells you:
+    "How spread out is this ball?" or "How compact is this protein?"
+    
+    Imagine you have a bunch of beads (CA atoms) connected by a string. If you 
+    throw them in the air, they'll spread out. The radius of gyration measures 
+    the "average distance" each bead is from the center of the whole structure.
+    
+    Biology context:
+    - Compact proteins (like globular proteins) have SMALL Rg - all atoms are 
+      close to the center, like a tight ball
+    - Extended proteins (like fibrous proteins) have LARGE Rg - atoms spread 
+      out far from center, like a stretched string
+    - Real proteins typically have Rg values between 5-30 Angstroms depending 
+      on size and shape
+    - If Rg is too small, the protein is unrealistically compact (like a black hole!)
+    - If Rg is too large, the protein is too spread out (like a loose string)
+    
+    The formula:
+    1. Find the center (average position of all CA atoms)
+    2. For each CA atom, calculate how far it is from the center
+    3. Square those distances
+    4. Take the average of all squared distances
+    5. Take the square root = radius of gyration!
+    
+    It's like asking: "If I had to describe this protein as a sphere, 
+    what would the radius be?"
+    
+    Args:
+        ca_coords: (B, L, 3) CA atom coordinates
+        mask: (B, L) bool - which residues are real (not padding)
+    
+    Returns:
+        rg: (B,) radius of gyration for each protein in the batch
+    """
+    # Step 1: Find the center of mass (center of the protein)
+    # This is just the average position of all CA atoms
+    # Think of it like finding the center of a ball - add up all positions and divide by count
+    m = mask.unsqueeze(-1).float()  # (B, L, 1) - convert bool to float for math
+    denom = m.sum(dim=1, keepdim=True).clamp(min=1.0)  # (B, 1, 1) - count of real residues
+    mean = (ca_coords * m).sum(dim=1, keepdim=True) / denom  # (B, 1, 3) - center point
+    
+    # Step 2: Calculate how far each CA atom is from the center
+    # For each atom, find: distance = sqrt((x - center_x)² + (y - center_y)² + (z - center_z)²)
+    centered = (ca_coords - mean) * m  # (B, L, 3) - distance vector from center to each atom
+    sq = (centered ** 2).sum(dim=-1)  # (B, L) - squared distance from center for each atom
+    
+    # Step 3: Average the squared distances (but only for real residues, ignore padding)
+    # This gives us the "mean squared distance from center"
+    mean_squared_dist = sq.sum(dim=1) / mask.sum(dim=1).clamp(min=1).float()  # (B,)
+    
+    # Step 4: Take the square root to get the radius of gyration
+    # This is the final answer: "On average, how far are atoms from the center?"
+    rg = torch.sqrt(mean_squared_dist + 1e-8)  # (B,) - add tiny number to avoid sqrt(0)
+    
+    return rg
+def compute_backbone_metrics(ca_coords, mask):
+    """
+    Main one-call metrics function - your "health check" for protein structures!
+    
+    Think of this like a doctor's checkup for a protein. Just like a doctor measures
+    your height, weight, blood pressure, and heart rate, this function measures different
+    "vital signs" of a protein structure to see if it's healthy and realistic.
+    
+    What does it check?
+    This function measures 6 important things about your protein:
+    
+    1. **CA-CA mean distance**: How far apart are neighboring amino acids on average?
+       - Like measuring the average step size when walking
+       - Should be around 2.0 Angstroms (healthy range: 1.9-2.1)
+       - Too small = atoms squished together (unrealistic!)
+       - Too large = atoms too spread out (protein falling apart!)
+    
+    2. **CA-CA min distance**: What's the shortest distance between neighbors?
+       - Like finding the smallest step in your walk
+       - Should be > 1.2 Angstroms
+       - If too small, atoms are overlapping (physically impossible!)
+    
+    3. **CA-CA max distance**: What's the longest distance between neighbors?
+       - Like finding the biggest step in your walk
+       - Should be < 4.5 Angstroms
+       - If too large, the protein chain is broken or stretched too far!
+    
+    4. **Clash fraction**: What percentage of non-neighbor atoms are too close?
+       - Like checking how many people are bumping into each other in a crowd
+       - Should be 0% (no clashes!)
+       - If > 0%, the structure has atoms overlapping (bad!)
+    
+    5. **Min non-neighbor distance**: What's the smallest distance between any two
+       atoms that AREN'T neighbors?
+       - Like finding the closest two people who shouldn't be near each other
+       - Should be > 0.6 Angstroms
+       - If too small, atoms are crashing into each other!
+    
+    6. **Radius of gyration**: How compact or spread out is the protein?
+       - Like measuring if a ball of yarn is tight or loose
+       - Typical range: 5-30 Angstroms depending on size
+       - Too small = unrealistically compact (like a black hole!)
+       - Too large = too spread out (like a loose string!)
+    
+    Why do we need all these metrics?
+    - Real proteins have specific geometric constraints (atoms can't overlap!)
+    - Generated proteins might look okay but have hidden problems
+    - These metrics catch problems before you try to use the protein for anything
+    
+    Args:
+        ca_coords: (B, L, 3) CA atom coordinates for a batch of proteins
+        mask: (B, L) bool - which residues are real (not padding)
+    
+    Returns:
+        A dictionary with 6 metrics (all averaged across the batch):
+        {
+            "ca_ca_mean": average neighbor distance,
+            "ca_ca_min": minimum neighbor distance,
+            "ca_ca_max": maximum neighbor distance,
+            "clash_fraction": fraction of non-neighbor pairs that clash,
+            "min_non_neighbor_dist": smallest non-neighbor distance,
+            "radius_of_gyration": how compact the protein is
+        }
+    """
+    # Part 1: Measure neighbor distances (consecutive amino acids)
+    # This is like measuring the distance between each bead and the next bead on a necklace
+    d, dmask = ca_neighbor_dist(ca_coords, mask)  # (B, L-1) distances between neighbors
+    
+    # Calculate statistics: mean, min, and max of neighbor distances
+    # We only count real bonds (ignore padding)
+    d_mean = masked_mean(d, dmask).item()  # Average step size
+    d_min = (torch.where(dmask, d, torch.full_like(d, 1e9))).min().item()  # Smallest step
+    d_max = (torch.where(dmask, d, torch.full_like(d, -1e9))).max().item()  # Largest step
+
+    # Part 2: Check for clashes (atoms that are too close together)
+    # This is like checking if any beads that aren't next to each other are touching
+    clash_frac, min_non_nb = clash_mask(ca_coords, mask, clash_dist=2.5, ignore_k=3)
+    clash_frac_mean = clash_frac.mean().item()  # What % of pairs are too close?
+    min_non_nb_mean = min_non_nb.mean().item()  # What's the smallest distance found?
+
+    # Part 3: Measure compactness (how spread out is the protein?)
+    # This is like measuring if the necklace is bunched up or stretched out
+    rg = radius_of_gyration(ca_coords, mask)  # (B,) - compactness for each protein
+    rg_mean = rg.mean().item()  # Average compactness across batch
+
+    # Return all the "vital signs" in one dictionary
+    return {
+        "ca_ca_mean": d_mean,              # Average neighbor distance
+        "ca_ca_min": d_min,                # Shortest neighbor distance
+        "ca_ca_max": d_max,                # Longest neighbor distance
+        "clash_fraction": clash_frac_mean,  # % of non-neighbors that are too close
+        "min_non_neighbor_dist": min_non_nb_mean,  # Smallest non-neighbor distance
+        "radius_of_gyration": rg_mean,     # How compact/spread out
+    }
